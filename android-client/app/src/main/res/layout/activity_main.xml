@@ -1,0 +1,254 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp"
+    android:background="#f5f6fa">
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="life的群组"
+        android:textSize="24sp"
+        android:textStyle="bold"
+        android:textColor="#4a90e2"
+        android:gravity="center"
+        android:padding="16dp" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:background="#fff"
+        android:elevation="2dp">
+
+        <Button
+            android:id="@+id/tabLogin"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="QQ登录"
+            android:textSize="12sp"
+            android:backgroundTint="#4a90e2" />
+
+        <Button
+            android:id="@+id/tabRegister"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="注册"
+            android:textSize="12sp" />
+
+        <Button
+            android:id="@+id/tabChange"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="改用户名"
+            android:textSize="12sp" />
+
+        <Button
+            android:id="@+id/tabAdmin"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="管理员"
+            android:textSize="12sp" />
+    </LinearLayout>
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:fillViewport="true">
+
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content">
+
+            <!-- QQ 登录 -->
+            <LinearLayout
+                android:id="@+id/contentLogin"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="16dp"
+                android:background="#fff">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="QQ 号登录"
+                    android:textSize="18sp"
+                    android:textStyle="bold"
+                    android:layout_marginBottom="12dp" />
+
+                <EditText
+                    android:id="@+id/etLoginQq"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:hint="QQ 号"
+                    android:inputType="number" />
+
+                <EditText
+                    android:id="@+id/etLoginPwd"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:hint="密码"
+                    android:inputType="textPassword"
+                    android:layout_marginTop="8dp" />
+
+                <Button
+                    android:id="@+id/btnLogin"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="登录"
+                    android:layout_marginTop="16dp" />
+            </LinearLayout>
+
+            <!-- 注册 -->
+            <LinearLayout
+                android:id="@+id/contentRegister"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="16dp"
+                android:background="#fff"
+                android:visibility="gone">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="注册账号"
+                    android:textSize="18sp"
+                    android:textStyle="bold"
+                    android:layout_marginBottom="12dp" />
+
+                <EditText
+                    android:id="@+id/etRegQq"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:hint="QQ 号"
+                    android:inputType="number" />
+
+                <EditText
+                    android:id="@+id/etRegName"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:hint="用户名"
+                    android:layout_marginTop="8dp" />
+
+                <EditText
+                    android:id="@+id/etRegPwd"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:hint="密码（至少6位）"
+                    android:inputType="textPassword"
+                    android:layout_marginTop="8dp" />
+
+                <Button
+                    android:id="@+id/btnRegister"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="注册"
+                    android:layout_marginTop="16dp" />
+            </LinearLayout>
+
+            <!-- 修改用户名 -->
+            <LinearLayout
+                android:id="@+id/contentChange"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="16dp"
+                android:background="#fff"
+                android:visibility="gone">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="修改用户名"
+                    android:textSize="18sp"
+                    android:textStyle="bold"
+                    android:layout_marginBottom="12dp" />
+
+                <EditText
+                    android:id="@+id/etChangeQq"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:hint="QQ 号"
+                    android:inputType="number" />
+
+                <EditText
+                    android:id="@+id/etChangePwd"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:hint="密码"
+                    android:inputType="textPassword"
+                    android:layout_marginTop="8dp" />
+
+                <EditText
+                    android:id="@+id/etChangeNewName"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:hint="新用户名"
+                    android:layout_marginTop="8dp" />
+
+                <Button
+                    android:id="@+id/btnChangeName"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="修改用户名"
+                    android:layout_marginTop="16dp" />
+            </LinearLayout>
+
+            <!-- 管理员登录 -->
+            <LinearLayout
+                android:id="@+id/contentAdmin"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="16dp"
+                android:background="#fff"
+                android:visibility="gone">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="管理员登录"
+                    android:textSize="18sp"
+                    android:textStyle="bold"
+                    android:layout_marginBottom="12dp" />
+
+                <EditText
+                    android:id="@+id/etAdminUser"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:hint="管理员账号" />
+
+                <EditText
+                    android:id="@+id/etAdminPwd"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:hint="密码"
+                    android:inputType="textPassword"
+                    android:layout_marginTop="8dp" />
+
+                <Button
+                    android:id="@+id/btnAdminLogin"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="进入管理后台"
+                    android:layout_marginTop="16dp" />
+            </LinearLayout>
+        </FrameLayout>
+    </ScrollView>
+
+    <ProgressBar
+        android:id="@+id/progress"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:visibility="gone" />
+</LinearLayout>

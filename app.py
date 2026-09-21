@@ -112,11 +112,13 @@ def is_muted():
 
 
 def admin_required(f):
-    """装饰器：要求当前用户为已登录管理员。"""
+    """装饰器：要求当前用户为已登录管理员。API 返回 JSON，页面重定向。"""
     @wraps(f)
     def wrapped(*args, **kwargs):
         user = current_user()
         if not user or user["role"] != "admin":
+            if request.path.startswith("/api/") or request.headers.get("X-Requested-With") == "XMLHttpRequest":
+                return jsonify({"ok": False, "error": "需要管理员权限"}), 403
             flash("需要管理员权限", "error")
             return redirect(url_for("login_page"))
         return f(*args, **kwargs)
@@ -333,13 +335,130 @@ def admin_page():
     )
 
 
-# API 接口 =================================================
-@app.route("/api/messages")
-def api_messages():
-    """轮询接口：返回新消息，全员禁言状态同步返回。"""
+# API 接口（供原生 Android 客户端使用）======================
+@app.route("/api/register", methods=["POST"])
+def api_register():
+    """JSON API：用户注册。"""
+    qq = request.form.get("qq", "").strip()
+    username = request.form.get("username", "").strip()
+    password = request.form.get("password", "")
+    if not qq or not username or not password:
+        return jsonify({"ok": False, "error": "QQ 号、用户名、密码均不能为空"})
+    if len(password) < 6:
+        return jsonify({"ok": False, "error": "密码长度至少 6 位"})
+
+    db = get_db()
+    existing = db.execute(
+        "SELECT id FROM users WHERE qq = ? OR username = ?", (qq, username)
+    ).fetchone()
+    if existing:
+        return jsonify({"ok": False, "error": "该 QQ 号或用户名已被注册"})
+
+    password_hash = generate_password_hash(password)
+    db.execute(
+        "INSERT INTO users (qq, username, password_hash, role, status) VALUES (?, ?, ?, 'user', 'pending')",
+        (qq, username, password_hash),
+    )
+    db.commit()
+    session["user_id"] = db.execute(
+        "SELECT id FROM users WHERE username = ?", (username,)
+    ).fetchone()["id"]
+    return jsonify({"ok": True})
+
+
+@app.route("/api/login", methods=["POST"])
+def api_login():
+    """JSON API：普通用户 QQ 登录。"""
+    qq = request.form.get("qq", "").strip()
+    password = request.form.get("password", "")
+    db = get_db()
+    row = db.execute(
+        "SELECT id, qq, username, password_hash, role, status FROM users WHERE qq = ?",
+        (qq,),
+    ).fetchone()
+
+    if not row or not check_password_hash(row["password_hash"], password):
+        return jsonify({"ok": False, "error": "QQ 号或密码错误"})
+    if row["role"] == "admin":
+        return jsonify({"ok": False, "error": "请使用管理员登录入口"})
+
+    session["user_id"] = row["id"]
+    return jsonify({"ok": True, "username": row["username"], "status": row["status"]})
+
+
+@app.route("/api/admin-login", methods=["POST"])
+def api_admin_login():
+    """JSON API：管理员登录。"""
+    username = request.form.get("username", "").strip()
+    password = request.form.get("password", "")
+    db = get_db()
+    row = db.execute(
+        "SELECT id, username, password_hash, role FROM users WHERE username = ? AND role = 'admin'",
+        (username,),
+    ).fetchone()
+    if not row or not check_password_hash(row["password_hash"], password):
+        return jsonify({"ok": False, "error": "管理员账号或密码错误"})
+    session["user_id"] = row["id"]
+    return jsonify({"ok": True})
+
+
+@app.route("/api/change-username", methods=["POST"])
+def api_change_username():
+    """JSON API：用户修改用户名。"""
+    qq = request.form.get("qq", "").strip()
+    password = request.form.get("password", "")
+    new_username = request.form.get("new_username", "").strip()
+    if not qq or not password or not new_username:
+        return jsonify({"ok": False, "error": "请填写完整"})
+
+    db = get_db()
+    row = db.execute(
+        "SELECT id, username, password_hash FROM users WHERE qq = ?", (qq,)
+    ).fetchone()
+    if not row or not check_password_hash(row["password_hash"], password):
+        return jsonify({"ok": False, "error": "QQ 号或密码错误"})
+
+    existing = db.execute(
+        "SELECT id FROM users WHERE username = ? AND id != ?", (new_username, row["id"])
+    ).fetchone()
+    if existing:
+        return jsonify({"ok": False, "error": "该用户名已被占用"})
+
+    db.execute("UPDATE users SET username = ? WHERE id = ?", (new_username, row["id"]))
+    db.execute("UPDATE messages SET username = ? WHERE user_id = ?", (new_username, row["id"]))
+    db.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/me")
+def api_me():
+    """JSON API：获取当前登录用户信息。"""
     user = current_user()
     if not user:
         return jsonify({"ok": False, "error": "未登录"}), 401
+    return jsonify({"ok": True, "user": user})
+
+
+@app.route("/api/admin/users")
+@admin_required
+def api_admin_users():
+    """JSON API：返回所有用户列表和禁言状态。"""
+    db = get_db()
+    rows = db.execute(
+        "SELECT id, qq, username, role, status, created_at FROM users ORDER BY created_at"
+    ).fetchall()
+    mute_value = db.execute("SELECT value FROM settings WHERE key = 'mute_all'").fetchone()["value"]
+    return jsonify({
+        "ok": True,
+        "users": [dict(r) for r in rows],
+        "muted": mute_value == "1",
+    })
+
+
+@app.route("/api/messages")
+@approved_required
+def api_messages():
+    """轮询接口：返回新消息，全员禁言状态同步返回。"""
     last_id = request.args.get("last_id", type=int, default=0)
     db = get_db()
     rows = db.execute(
