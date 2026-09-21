@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ group_name }} - 登录</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h1>{{ group_name }}</h1>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                <div class="flash-list">
+                    {% for category, message in messages %}
+                        <div class="flash flash-{{ category }}">{{ message }}</div>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        {% endwith %}
+
+        <div class="card">
+            <div class="tabs">
+                <button class="tab-button active" onclick="showTab('login')">QQ登录</button>
+                <button class="tab-button" onclick="showTab('register')">注册</button>
+                <button class="tab-button" onclick="showTab('change')">修改用户名</button>
+                <button class="tab-button" onclick="showTab('admin')">管理员登录</button>
+            </div>
+
+            <!-- QQ 登录 -->
+            <form id="login-form" class="tab-content" action="/login" method="POST">
+                <h2>QQ 号登录</h2>
+                <label>QQ 号</label>
+                <input type="text" name="qq" placeholder="请输入 QQ 号" required pattern="[0-9]+" title="请输入数字 QQ 号">
+                <label>密码</label>
+                <input type="password" name="password" placeholder="请输入密码" required>
+                <button type="submit">登录</button>
+            </form>
+
+            <!-- 注册 -->
+            <form id="register-form" class="tab-content hidden" action="/register" method="POST">
+                <h2>注册账号</h2>
+                <label>QQ 号</label>
+                <input type="text" name="qq" placeholder="用于身份核验" required pattern="[0-9]+" title="请输入数字 QQ 号">
+                <label>用户名</label>
+                <input type="text" name="username" placeholder="群内显示的名称" required>
+                <label>密码</label>
+                <input type="password" name="password" placeholder="至少 6 位" required minlength="6">
+                <button type="submit">注册并等待审核</button>
+            </form>
+
+            <!-- 修改用户名 -->
+            <form id="change-form" class="tab-content hidden" action="/change-username" method="POST">
+                <h2>修改用户名</h2>
+                <label>QQ 号</label>
+                <input type="text" name="qq" placeholder="请输入 QQ 号" required pattern="[0-9]+" title="请输入数字 QQ 号">
+                <label>密码</label>
+                <input type="password" name="password" placeholder="请输入密码" required>
+                <label>新用户名</label>
+                <input type="text" name="new_username" placeholder="新的群内昵称" required>
+                <button type="submit">修改用户名</button>
+            </form>
+
+            <!-- 管理员登录 -->
+            <form id="admin-form" class="tab-content hidden" action="/admin-login" method="POST">
+                <h2>管理员登录</h2>
+                <label>管理员账号</label>
+                <input type="text" name="username" placeholder="输入管理员账号" required>
+                <label>密码</label>
+                <input type="password" name="password" required>
+                <button type="submit">进入管理后台</button>
+            </form>
+        </div>
+
+        <p class="hint">注册后需管理员审核通过，方可进入群聊。</p>
+    </div>
+
+    <script>
+        function showTab(name) {
+            document.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(form => form.classList.add('hidden'));
+
+            const map = {'login': 0, 'register': 1, 'change': 2, 'admin': 3};
+            const index = map[name];
+            document.querySelectorAll('.tab-button')[index].classList.add('active');
+            document.getElementById(name + '-form').classList.remove('hidden');
+        }
+    </script>
+</body>
+</html>

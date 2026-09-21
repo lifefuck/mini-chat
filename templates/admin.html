@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ group_name }} - 管理后台</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="admin-wrapper">
+        <header class="admin-header">
+            <h1>⚙️ {{ group_name }} 管理后台</h1>
+            <div class="header-btns">
+                <button id="mute-btn" class="btn {{ 'btn-warn' if not muted else 'btn-safe' }}" onclick="toggleMute()">
+                    {{ '🔇 开启禁言' if not muted else '🔊 解除禁言' }}
+                </button>
+                <a href="/logout" class="btn btn-danger">退出</a>
+            </div>
+        </header>
+
+        <main class="admin-main">
+            <section class="admin-section">
+                <h2>账号管理</h2>
+                <p class="hint">密码经加密存储，无法直接查看明文，但可以重置。</p>
+                {% if users %}
+                    <div class="table-wrap">
+                        <table class="admin-table">
+                            <thead>
+                                <tr>
+                                    <th>QQ</th>
+                                    <th>用户名</th>
+                                    <th>身份</th>
+                                    <th>状态</th>
+                                    <th>注册时间</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for u in users %}
+                                    <tr id="user-row-{{ u.id }}">
+                                        <td>{{ u.qq }}</td>
+                                        <td id="uname-{{ u.id }}">{{ u.username }}</td>
+                                        <td>{{ '管理员' if u.role == 'admin' else '用户' }}</td>
+                                        <td>
+                                            <span class="badge {{ u.status }}">
+                                                {{ '已通过' if u.status == 'approved' else '待审核' }}
+                                            </span>
+                                        </td>
+                                        <td>{{ u.created_at }}</td>
+                                        <td class="ops">
+                                            {% if u.role == 'user' %}
+                                                {% if u.status == 'pending' %}
+                                                    <button class="btn btn-safe" onclick="approve({{ u.id }})">通过</button>
+                                                {% else %}
+                                                    <button class="btn btn-warn" onclick="reject({{ u.id }})">冻结</button>
+                                                {% endif %}
+                                                <div class="inline-form">
+                                                    <input type="text" id="new-name-{{ u.id }}" placeholder="新用户名" required>
+                                                    <button class="btn" onclick="changeUsername({{ u.id }})">改名</button>
+                                                </div>
+                                                <div class="inline-form">
+                                                    <input type="text" id="new-pwd-{{ u.id }}" placeholder="新密码" required>
+                                                    <button class="btn btn-danger" onclick="resetPassword({{ u.id }})">重置密码</button>
+                                                </div>
+                                                <button class="btn btn-danger" onclick="deleteUser({{ u.id }})">删除</button>
+                                            {% else %}
+                                                <span class="muted">内置管理员</span>
+                                            {% endif %}
+                                        </td>
+                                    </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% else %}
+                    <p class="empty">暂无账号</p>
+                {% endif %}
+            </section>
+
+            <section class="admin-section">
+                <h2>历史消息</h2>
+                {% if messages %}
+                    <div class="table-wrap">
+                        <table class="admin-table">
+                            <thead>
+                                <tr><th>时间</th><th>用户</th><th>内容</th><th>操作</th></tr>
+                            </thead>
+                            <tbody>
+                                {% for m in messages %}
+                                    <tr id="msg-row-{{ m.id }}">
+                                        <td>{{ m.created_at }}</td>
+                                        <td>{{ m.username }}</td>
+                                        <td class="msg-content">{{ m.content }}</td>
+                                        <td><button class="btn btn-danger" onclick="deleteMessage({{ m.id }})">删除</button></td>
+                                    </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% else %}
+                    <p class="empty">暂无消息</p>
+                {% endif %}
+            </section>
+        </main>
+    </div>
+
+    <script>
+        async function post(url) { return fetch(url, { method: 'POST' }); }
+
+        async function approve(id) {
+            await post('/api/admin/approve/' + id);
+            location.reload();
+        }
+
+        async function reject(id) {
+            if (!confirm('确定冻结该用户？冻结后无法发言但仍保留账号。')) return;
+            await post('/api/admin/reject/' + id);
+            location.reload();
+        }
+
+        async function deleteUser(id) {
+            if (!confirm('确定删除该用户及其所有消息？此操作不可恢复。')) return;
+            await post('/api/admin/delete/' + id);
+            document.getElementById('user-row-' + id).remove();
+        }
+
+        async function resetPassword(id) {
+            const pwd = document.getElementById('new-pwd-' + id).value.trim();
+            if (!pwd || pwd.length < 6) { alert('密码至少 6 位'); return; }
+            const fd = new FormData(); fd.append('new_password', pwd);
+            const r = await fetch('/api/admin/reset-password/' + id, { method: 'POST', body: fd });
+            const j = await r.json();
+            alert(j.ok ? '密码已重置' : (j.error || '重置失败'));
+        }
+
+        async function changeUsername(id) {
+            const name = document.getElementById('new-name-' + id).value.trim();
+            if (!name) { alert('新用户名不能为空'); return; }
+            const fd = new FormData(); fd.append('new_username', name);
+            const r = await fetch('/api/admin/change-username/' + id, { method: 'POST', body: fd });
+            const j = await r.json();
+            if (j.ok) {
+                document.getById('uname-' + id).textContent = name;
+                alert('用户名已修改');
+            } else {
+                alert(j.error || '修改失败');
+            }
+        }
+
+        async function toggleMute() {
+            const btn = document.getElementById('mute-btn');
+            const mute = btn.textContent.includes('开启禁言');
+            await post(mute ? '/api/admin/mute' : '/api/admin/unmute');
+            location.reload();
+        }
+
+        async function deleteMessage(id) {
+            if (!confirm('确定删除这条消息？')) return;
+            await post('/api/admin/delete-message/' + id);
+            document.getElementById('msg-row-' + id).remove();
+        }
+    </script>
+</body>
+</html>

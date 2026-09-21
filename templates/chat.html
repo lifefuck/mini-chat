@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ group_name }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="chat-container">
+        <header>
+            <span>{{ group_name }}</span>
+            <div class="header-right">
+                <span class="my-name">{{ username }}</span>
+                <a href="/logout" class="logout-link">退出</a>
+            </div>
+        </header>
+
+        {% if muted %}
+            <div id="mute-tip" class="mute-tip">🔇 全员禁言中，只有管理员能解除</div>
+        {% else %}
+            <div id="mute-tip" class="mute-tip" style="display:none;"></div>
+        {% endif %}
+
+        <main id="messages" class="messages">
+            <div class="loading">加载消息中…</div>
+        </main>
+
+        <footer>
+            <input id="message-input" type="text" placeholder="输入文字消息…" maxlength="500" autocomplete="off" {{ 'disabled' if muted else '' }}>
+            <button id="send-btn" onclick="sendMessage()" {{ 'disabled' if muted else '' }}>发送</button>
+        </footer>
+    </div>
+
+    <script>
+        const myName = {{ username | tojson }};
+        let lastId = 0;
+
+        loadMessages();
+        setInterval(loadMessages, 1500);
+
+        document.getElementById('message-input').addEventListener('keypress', function (e) {
+            if (e.key === 'Enter') sendMessage();
+        });
+
+        function setMuted(muted) {
+            const tip = document.getElementById('mute-tip');
+            const input = document.getElementById('message-input');
+            const btn = document.getElementById('send-btn');
+            if (muted) {
+                tip.style.display = 'block';
+                tip.textContent = '🔇 全员禁言中，只有管理员能解除';
+                input.disabled = true;
+                btn.disabled = true;
+            } else {
+                tip.style.display = 'none';
+                input.disabled = false;
+                btn.disabled = false;
+            }
+        }
+
+        async function loadMessages() {
+            try {
+                const resp = await fetch('/api/messages?last_id=' + lastId);
+                const data = await resp.json();
+                setMuted(data.muted);
+                appendMessages(data.messages);
+            } catch (err) {
+                console.error('拉取消息失败', err);
+            }
+        }
+
+        function appendMessages(messages) {
+            const box = document.getElementById('messages');
+            if (lastId === 0) box.innerHTML = '';
+
+            messages.forEach(msg => {
+                const div = document.createElement('div');
+                div.className = 'message' + (msg.username === myName ? ' me' : '');
+                div.innerHTML = `
+                    <div class="bubble">
+                        <div class="meta">${escapeHtml(msg.username)} <span class="time">${msg.created_at}</span></div>
+                        <div class="text">${escapeHtml(msg.content)}</div>
+                    </div>
+                `;
+                box.appendChild(div);
+                lastId = Math.max(lastId, msg.id);
+            });
+
+            if (messages.length > 0) {
+                box.scrollTop = box.scrollHeight;
+            }
+        }
+
+        async function sendMessage() {
+            const input = document.getElementById('message-input');
+            const content = input.value.trim();
+            if (!content) return;
+
+            input.disabled = true;
+            try {
+                const resp = await fetch('/api/send', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ content: content })
+                });
+                const data = await resp.json();
+                if (data.ok) {
+                    input.value = '';
+                    await loadMessages();
+                } else {
+                    alert(data.error || '发送失败');
+                }
+            } finally {
+                if (document.getElementById('mute-tip').style.display !== 'block') {
+                    input.disabled = false;
+                    input.focus();
+                }
+            }
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+</html>
