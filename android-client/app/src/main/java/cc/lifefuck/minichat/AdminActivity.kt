@@ -41,7 +41,7 @@ class AdminActivity : BaseActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            MiuixTheme {
+            AppTheme {
                 AdminPage()
             }
         }

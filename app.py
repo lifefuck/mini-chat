@@ -61,9 +61,15 @@ def init_db():
             password_hash TEXT NOT NULL,
             role TEXT NOT NULL DEFAULT 'user',
             status TEXT NOT NULL DEFAULT 'pending',
-            created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+            avatar TEXT DEFAULT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    # 已存在的数据库做字段迁移
+    try:
+        db.execute("ALTER TABLE users ADD COLUMN avatar TEXT DEFAULT NULL")
+    except sqlite3.OperationalError:
+        pass
     db.execute("""
         CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -99,9 +105,23 @@ def current_user():
     if not uid:
         return None
     row = get_db().execute(
-        "SELECT id, qq, username, role, status FROM users WHERE id = ?", (uid,)
+        "SELECT id, qq, username, role, status, avatar FROM users WHERE id = ?", (uid,)
     ).fetchone()
     return dict(row) if row else None
+
+
+def login_required(f):
+    """装饰器：要求已登录（管理员或普通用户均可）。"""
+    @wraps(f)
+    def wrapped(*args, **kwargs):
+        user = current_user()
+        if not user:
+            if request.path.startswith("/api/") or request.headers.get("X-Requested-With") == "XMLHttpRequest":
+                return jsonify({"ok": False, "error": "未登录"}), 401
+            flash("请先登录", "error")
+            return redirect(url_for("login_page"))
+        return f(*args, **kwargs)
+    return wrapped
 
 
 def is_muted():
@@ -349,15 +369,16 @@ def api_register():
         return jsonify({"ok": False, "error": "密码长度至少 6 位"})
 
     db = get_db()
-    existing = db.execute(
-        "SELECT id FROM users WHERE qq = ? OR username = ?", (qq, username)
-    ).fetchone()
-    if existing:
-        return jsonify({"ok": False, "error": "该 QQ 号或用户名已被注册"})
+    existing_qq = db.execute("SELECT id FROM users WHERE qq = ?", (qq,)).fetchone()
+    if existing_qq:
+        return jsonify({"ok": False, "error": "该账号已注册"})
+    existing_name = db.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+    if existing_name:
+        return jsonify({"ok": False, "error": "该用户名已被占用"})
 
     password_hash = generate_password_hash(password)
     db.execute(
-        "INSERT INTO users (qq, username, password_hash, role, status) VALUES (?, ?, ?, 'user', 'pending')",
+        "INSERT INTO users (qq, username, password_hash, role, status, avatar) VALUES (?, ?, ?, 'user', 'pending', NULL)",
         (qq, username, password_hash),
     )
     db.commit()
@@ -384,11 +405,13 @@ def api_login():
         return jsonify({"ok": False, "error": "请使用管理员登录入口"})
     if not check_password_hash(row["password_hash"], password):
         return jsonify({"ok": False, "error": "密码错误"})
+    if row["status"] != "approved":
+        return jsonify({"ok": False, "error": "该账号申请等待同意"})
 
     session["user_id"] = row["id"]
     session.permanent = True
     app.permanent_session_lifetime = timedelta(days=3)
-    return jsonify({"ok": True, "username": row["username"], "status": row["status"]})
+    return jsonify({"ok": True, "username": row["username"], "status": row["status"], "avatar": row["avatar"]})
 
 
 @app.route("/api/admin-login", methods=["POST"])
@@ -437,6 +460,8 @@ def api_unified_login():
         return jsonify({"ok": False, "error": "账号不存在"})
     if not check_password_hash(row["password_hash"], password):
         return jsonify({"ok": False, "error": "密码错误"})
+    if row["role"] == "user" and row["status"] != "approved":
+        return jsonify({"ok": False, "error": "该账号申请等待同意"})
 
     session["user_id"] = row["id"]
     session.permanent = True
@@ -446,46 +471,69 @@ def api_unified_login():
         "username": row["username"],
         "role": row["role"],
         "status": row["status"],
+        "avatar": row["avatar"],
     })
 
 
 @app.route("/api/change-username", methods=["POST"])
+@login_required
 def api_change_username():
-    """JSON API：用户修改用户名。"""
-    qq = request.form.get("qq", "").strip()
-    password = request.form.get("password", "")
-    new_username = request.form.get("new_username", "").strip()
-    if not qq or not password or not new_username:
-        return jsonify({"ok": False, "error": "请填写完整"})
+    """JSON API：已登录用户直接修改用户名，无需再次验证密码。"""
+    new_username = (request.form.get("new_username") or "").strip()
+    if not new_username:
+        return jsonify({"ok": False, "error": "新用户名不能为空"})
 
     db = get_db()
-    row = db.execute(
-        "SELECT id, username, password_hash FROM users WHERE qq = ?", (qq,)
-    ).fetchone()
-    if not row:
-        return jsonify({"ok": False, "error": "该 QQ 号未注册"})
-    if not check_password_hash(row["password_hash"], password):
-        return jsonify({"ok": False, "error": "密码错误"})
-
+    user_id = session["user_id"]
     existing = db.execute(
-        "SELECT id FROM users WHERE username = ? AND id != ?", (new_username, row["id"])
+        "SELECT id FROM users WHERE username = ? AND id != ?", (new_username, user_id)
     ).fetchone()
     if existing:
         return jsonify({"ok": False, "error": "该用户名已被占用"})
 
-    db.execute("UPDATE users SET username = ? WHERE id = ?", (new_username, row["id"]))
-    db.execute("UPDATE messages SET username = ? WHERE user_id = ?", (new_username, row["id"]))
+    old_row = db.execute("SELECT username FROM users WHERE id = ?", (user_id,)).fetchone()
+    old_name = old_row["username"] if old_row else ""
+    db.execute("UPDATE users SET username = ? WHERE id = ?", (new_username, user_id))
+    if old_name:
+        db.execute("UPDATE messages SET username = ? WHERE user_id = ? AND username = ?",
+                   (new_username, user_id, old_name))
     db.commit()
-    return jsonify({"ok": True})
+    new_row = db.execute(
+        "SELECT id, username, qq, role, status, avatar FROM users WHERE id = ?", (user_id,)
+    ).fetchone()
+    return jsonify({"ok": True, "user": dict(new_row)})
 
 
 @app.route("/api/me")
+@login_required
 def api_me():
     """JSON API：获取当前登录用户信息。"""
-    user = current_user()
-    if not user:
-        return jsonify({"ok": False, "error": "未登录"}), 401
+    db = get_db()
+    row = db.execute(
+        "SELECT id, qq, username, role, status, avatar, created_at FROM users WHERE id = ?",
+        (session["user_id"],)
+    ).fetchone()
+    if not row:
+        return jsonify({"ok": False, "error": "用户不存在"}), 404
+    user = dict(row)
+    user["avatar"] = user.get("avatar")
     return jsonify({"ok": True, "user": user})
+
+
+@app.route("/api/update-avatar", methods=["POST"])
+@login_required
+def api_update_avatar():
+    """JSON API：上传 base64 头像，限制大小不超过 500KB。"""
+    avatar = (request.form.get("avatar") or "").strip()
+    if not avatar:
+        return jsonify({"ok": False, "error": "头像数据不能为空"})
+    # 简单限制 base64 字符串长度（约 500KB 图片编码后约 680KB）
+    if len(avatar) > 700_000:
+        return jsonify({"ok": False, "error": "头像不能超过 500KB"})
+    db = get_db()
+    db.execute("UPDATE users SET avatar = ? WHERE id = ?", (avatar, session["user_id"]))
+    db.commit()
+    return jsonify({"ok": True})
 
 
 @app.route("/api/admin/users")
@@ -494,7 +542,7 @@ def api_admin_users():
     """JSON API：返回所有用户列表和禁言状态。"""
     db = get_db()
     rows = db.execute(
-        "SELECT id, qq, username, role, status, created_at FROM users ORDER BY created_at"
+        "SELECT id, qq, username, role, status, avatar, created_at FROM users ORDER BY created_at"
     ).fetchall()
     mute_value = db.execute("SELECT value FROM settings WHERE key = 'mute_all'").fetchone()["value"]
     return jsonify({
@@ -512,11 +560,13 @@ def api_messages():
     db = get_db()
     rows = db.execute(
         """
-        SELECT id, username, content,
-               strftime('%Y-%m-%d %H:%M:%S', created_at) AS created_at
-        FROM messages
-        WHERE id > ?
-        ORDER BY id ASC
+        SELECT m.id, m.user_id, m.username, m.content,
+               strftime('%Y-%m-%d %H:%M:%S', m.created_at) AS created_at,
+               u.avatar
+        FROM messages m
+        LEFT JOIN users u ON u.id = m.user_id
+        WHERE m.id > ?
+        ORDER BY m.id ASC
         """,
         (last_id,),
     ).fetchall()
@@ -552,8 +602,14 @@ def api_send():
     )
     msg_id = cursor.lastrowid
     row = db.execute(
-        "SELECT id, username, content, strftime('%Y-%m-%d %H:%M:%S', created_at) AS created_at "
-        "FROM messages WHERE id = ?", (msg_id,)
+        """
+        SELECT m.id, m.user_id, m.username, m.content,
+               strftime('%Y-%m-%d %H:%M:%S', m.created_at) AS created_at,
+               u.avatar
+        FROM messages m
+        LEFT JOIN users u ON u.id = m.user_id
+        WHERE m.id = ?
+        """, (msg_id,)
     ).fetchone()
     db.commit()
     return jsonify({"ok": True, "message": dict(row)})

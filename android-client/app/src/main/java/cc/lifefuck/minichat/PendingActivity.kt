@@ -25,7 +25,7 @@ class PendingActivity : BaseActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            MiuixTheme {
+            AppTheme {
                 val context = LocalContext.current
                 Column(
                     modifier = Modifier.fillMaxSize().padding(24.dp),

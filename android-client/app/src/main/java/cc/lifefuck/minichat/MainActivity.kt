@@ -2,10 +2,9 @@ package cc.lifefuck.minichat
 
 import android.content.Intent
 import android.os.Bundle
-import androidx.activity.ComponentActivity
+import android.widget.Toast
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -13,6 +12,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
+import androidx.compose.animation.Crossfade
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -30,23 +30,26 @@ import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 /**
- * 应用入口：登录 / 注册 / 修改用户名。
- * 统一登录入口兼容 QQ 号和管理员账号，自动跳转对应页面。
- * 使用 Miuix 组件与 Material3 TabRow（避免原版切换滑块卡顿/失效）。
+ * 应用入口：登录 / 注册。
+ *
+ * 注册成功提示"成功注册，请联系管理员同意申请"；
+ * 重复注册提示"该账号已注册"；
+ * 登录时账号密码正确但管理员未同意提示"该账号申请等待同意"。
+ * 修改昵称功能已移到聊天页左上角。
  */
 class MainActivity : BaseActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            MiuixTheme {
+            AppTheme {
                 MainPage()
             }
         }
     }
 }
 
-private val tabs = listOf("登录", "注册", "改昵称")
+private val tabs = listOf("登录", "注册")
 
 @Composable
 fun MainPage() {
@@ -68,10 +71,9 @@ fun MainPage() {
     var regPwd by remember { mutableStateOf("") }
     var regPwd2 by remember { mutableStateOf("") }
 
-    // 改名字段
-    var changeQq by remember { mutableStateOf("") }
-    var changePwd by remember { mutableStateOf("") }
-    var changeNew by remember { mutableStateOf("") }
+    fun showToast(text: String) {
+        Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
+    }
 
     // 启动时检查 3 天内是否登录过，自动登录
     LaunchedEffect(Unit) {
@@ -166,11 +168,6 @@ fun MainPage() {
                                 pwd = regPwd, onPwd = { regPwd = it },
                                 pwd2 = regPwd2, onPwd2 = { regPwd2 = it }
                             )
-                            2 -> ChangeNameForm(
-                                qq = changeQq, onQq = { changeQq = it },
-                                pwd = changePwd, onPwd = { changePwd = it },
-                                new = changeNew, onNew = { changeNew = it }
-                            )
                         }
 
                         Spacer(modifier = Modifier.height(12.dp))
@@ -196,39 +193,34 @@ fun MainPage() {
                                                     loginPwd = ""
                                                 } else {
                                                     errorText = ApiClient.errorText(json)
+                                                    showToast(ApiClient.errorText(json))
                                                 }
                                             }
                                         }
                                         1 -> {
-                                            errorText = when {
+                                            val validationError = when {
                                                 regQq.isBlank() || regName.isBlank() || regPwd.isBlank() -> "QQ 号、用户名、密码均不能为空"
                                                 regPwd != regPwd2 -> "两次输入的密码不一致"
                                                 regPwd.length < 6 -> "密码至少 6 位"
-                                                else -> {
-                                                    val (ok, json) = ApiClient.post(
-                                                        "/api/register",
-                                                        mapOf("qq" to regQq, "username" to regName, "password" to regPwd)
-                                                    )
-                                                    if (ok) {
-                                                        regQq = ""; regName = ""; regPwd = ""; regPwd2 = ""
-                                                        "申请已提交，请等待管理员审核"
-                                                    } else ApiClient.errorText(json)
-                                                }
+                                                else -> null
                                             }
-                                        }
-                                        2 -> {
-                                            errorText = if (changeQq.isBlank() || changePwd.isBlank() || changeNew.isBlank()) {
-                                                "请填写完整"
+                                            if (validationError != null) {
+                                                errorText = validationError
+                                                showToast(validationError)
                                             } else {
                                                 val (ok, json) = ApiClient.post(
-                                                    "/api/change-username",
-                                                    mapOf("qq" to changeQq, "password" to changePwd, "new_username" to changeNew)
+                                                    "/api/register",
+                                                    mapOf("qq" to regQq, "username" to regName, "password" to regPwd)
                                                 )
                                                 if (ok) {
-                                                    ApiClient.currentUsername = changeNew
-                                                    changeQq = ""; changePwd = ""; changeNew = ""
-                                                    "用户名已修改为 ${ApiClient.currentUsername}"
-                                                } else ApiClient.errorText(json)
+                                                    regQq = ""; regName = ""; regPwd = ""; regPwd2 = ""
+                                                    errorText = "成功注册，请联系管理员同意申请"
+                                                    showToast("成功注册，请联系管理员同意申请")
+                                                } else {
+                                                    val err = ApiClient.errorText(json)
+                                                    errorText = err
+                                                    showToast(err)
+                                                }
                                             }
                                         }
                                     }
@@ -241,8 +233,7 @@ fun MainPage() {
                             Text(
                                 text = when (tab) {
                                     0 -> if (isLoading) "登录中…" else "登录"
-                                    1 -> "申请加入"
-                                    else -> "修改用户名"
+                                    else -> "申请加入"
                                 },
                                 fontSize = 16.sp
                             )
@@ -250,7 +241,7 @@ fun MainPage() {
 
                         if (errorText.isNotBlank()) {
                             Spacer(modifier = Modifier.height(12.dp))
-                            val isSuccess = errorText.startsWith("申请已提交") || errorText.startsWith("用户名已修改")
+                            val isSuccess = errorText.startsWith("成功注册")
                             Text(
                                 text = errorText,
                                 color = if (isSuccess) Color(0xFF2E7D32) else if (errorText == "正在自动登录…") MiuixTheme.colorScheme.primary else Color(0xFFE94634),
@@ -322,18 +313,4 @@ fun RegisterForm(
     AuthField(pwd, onPwd, "密码", isPassword = true)
     Spacer(modifier = Modifier.height(10.dp))
     AuthField(pwd2, onPwd2, "确认密码", isPassword = true)
-}
-
-@Composable
-fun ChangeNameForm(
-    qq: String, onQq: (String) -> Unit,
-    pwd: String, onPwd: (String) -> Unit,
-    new: String, onNew: (String) -> Unit
-) {
-    Title("修改用户名")
-    AuthField(qq, onQq, "QQ 号")
-    Spacer(modifier = Modifier.height(10.dp))
-    AuthField(pwd, onPwd, "密码", isPassword = true)
-    Spacer(modifier = Modifier.height(10.dp))
-    AuthField(new, onNew, "新用户名")
 }

@@ -30,6 +30,10 @@
             android:windowSoftInputMode="adjustResize" />
 
         <activity
+            android:name=".EditNameActivity"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
             android:name=".AdminActivity"
             android:windowSoftInputMode="adjustResize" />
 

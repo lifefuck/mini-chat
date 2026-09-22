@@ -1,23 +1,59 @@
 package cc.lifefuck.minichat
 
+import android.app.Activity
 import android.content.Intent
+import android.graphics.BitmapFactory
+import android.net.Uri
 import android.os.Bundle
+import android.util.Base64
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
@@ -33,14 +69,19 @@ import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import java.io.ByteArrayOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
 /**
  * 文字群聊页面。
+ *
+ * - 应用 Material You / Monet 动态取色
  * - 禁止截图录屏、最近任务白屏（继承 BaseActivity）
  * - 底部输入框随键盘上抬，键盘弹出时聊天记录自动滚到底部
+ * - 顶部左侧显示当前用户头像（首字母/图片），点击头像可换头像；名字点击跳转修改昵称
+ * - 每条消息气泡上显示发送者头像与名字
  * - 发送消息立即显示"发送中…"气泡，成功后立即插入后端返回的正式消息
  * - 顶部提供退出账号和管理员登录/进入后台入口
  */
@@ -49,19 +90,30 @@ class ChatActivity : BaseActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            MiuixTheme {
+            AppTheme {
                 ChatPage()
             }
         }
     }
 }
 
+/**
+ * 消息数据类。
+ *
+ * @param id 消息唯一 ID，pending 消息为负数临时 ID
+ * @param username 发送者昵称
+ * @param content 消息正文
+ * @param time 显示时间 HH:mm
+ * @param pending 是否为本地"发送中"临时气泡
+ * @param avatar 发送者头像 base64；空则使用首字母占位
+ */
 data class Msg(
     val id: Int,
     val username: String,
     val content: String,
     val time: String,
-    val pending: Boolean = false
+    val pending: Boolean = false,
+    val avatar: String? = null
 )
 
 /** 格式化时间为 HH:mm 显示。 */
@@ -71,6 +123,41 @@ private fun formatTime(timeStr: String): String {
     }
     val sdf = SimpleDateFormat("HH:mm", Locale.getDefault())
     return sdf.format(Date())
+}
+
+/** 裁剪字符串为首字符：英文取第一个字母，中文取第一个汉字。 */
+private fun avatarInitial(name: String): String {
+    if (name.isBlank()) return "?"
+    return name.trim().firstOrNull()?.toString() ?: "?"
+}
+
+/** 将头像 base64 字符串解码为 Compose ImageBitmap，失败返回 null。 */
+private fun avatarBitmap(base64: String?) = base64?.let { data ->
+    try {
+        val bytes = Base64.decode(data, Base64.DEFAULT)
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+    } catch (_: Exception) { null }
+}
+
+/** 读取 URI 图片并压缩为 JPEG base64，限制最长边 256px、质量 60%。 */
+private fun uriToBase64Avatar(context: android.content.Context, uri: Uri): String? {
+    return try {
+        context.contentResolver.openInputStream(uri)?.use { ins ->
+            val bm = BitmapFactory.decodeStream(ins) ?: return null
+            val max = 256
+            val w = bm.width
+            val h = bm.height
+            val ratio = if (w > h) w.toFloat() / max else h.toFloat() / max
+            val bm2 = if (ratio > 1) {
+                android.graphics.Bitmap.createScaledBitmap(
+                    bm, (w / ratio).toInt(), (h / ratio).toInt(), true
+                )
+            } else bm
+            val out = ByteArrayOutputStream()
+            bm2.compress(android.graphics.Bitmap.CompressFormat.JPEG, 60, out)
+            Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+        }
+    } catch (_: Exception) { null }
 }
 
 @Composable
@@ -87,15 +174,66 @@ fun ChatPage() {
     var errorTip by remember { mutableStateOf("") }
     var lastId by remember { mutableStateOf(0) }
 
+    // 当前登录用户信息（昵称/头像）
+    var myUsername by remember { mutableStateOf(ApiClient.currentUsername) }
+    var myAvatar by remember { mutableStateOf<String?>(null) }
+
     // 管理员入口状态
     var showAdminLogin by remember { mutableStateOf(false) }
     var adminAccount by remember { mutableStateOf("") }
     var adminPwd by remember { mutableStateOf("") }
     var adminLogging by remember { mutableStateOf(false) }
     var adminLoginError by remember { mutableStateOf("") }
-    val hasAdminSaved = remember { AuthStore.getAdmin(context) != null }
     var needsAdminRefresh by remember { mutableIntStateOf(0) }
     val hasAdmin = remember(needsAdminRefresh) { AuthStore.getAdmin(context) != null }
+
+    // 拉取当前用户信息
+    LaunchedEffect(Unit) {
+        val (ok, json) = ApiClient.get("/api/me")
+        if (ok) {
+            val user = json.optJSONObject("user")
+            val name = user?.optString("username") ?: ""
+            if (name.isNotBlank()) {
+                myUsername = name
+                ApiClient.currentUsername = name
+            }
+            myAvatar = user?.optString("avatar")?.takeIf { it.isNotBlank() }
+        }
+    }
+
+    // 图片选择器：选择单张图片作为头像
+    val avatarPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        uri ?: return@rememberLauncherForActivityResult
+        scope.launch {
+            val base64 = uriToBase64Avatar(context, uri)
+            if (base64 == null) {
+                Toast.makeText(context, "头像读取失败", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            val (ok, json) = ApiClient.post(
+                "/api/update-avatar",
+                mapOf("avatar" to base64)
+            )
+            if (ok) {
+                myAvatar = base64
+                Toast.makeText(context, "头像已更新", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(context, ApiClient.errorText(json), Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    // 修改昵称结果回调
+    val editNameLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val name = ApiClient.currentUsername
+            if (name.isNotBlank()) myUsername = name
+        }
+    }
 
     // 加载历史消息
     suspend fun loadMessages(): Boolean {
@@ -107,7 +245,8 @@ fun ChatPage() {
                 id = o.optInt("id"),
                 username = o.optString("username"),
                 content = o.optString("content"),
-                time = formatTime(o.optString("created_at", ""))
+                time = formatTime(o.optString("created_at", "")),
+                avatar = o.optString("avatar").takeIf { it.isNotBlank() }
             )
         }
         messages = loaded
@@ -129,7 +268,8 @@ fun ChatPage() {
                     id = o.optInt("id"),
                     username = o.optString("username"),
                     content = o.optString("content"),
-                    time = formatTime(o.optString("created_at", ""))
+                    time = formatTime(o.optString("created_at", "")),
+                    avatar = o.optString("avatar").takeIf { it.isNotBlank() }
                 )
             }
             if (new.isNotEmpty()) {
@@ -160,9 +300,41 @@ fun ChatPage() {
         topBar = {
             TopAppBar(
                 title = "life的群组",
-                subtitle = "",
+                navigationIcon = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = {
+                                editNameLauncher.launch(
+                                    Intent(context, EditNameActivity::class.java)
+                                )
+                            }
+                        )
+                    ) {
+                        // 头像点击换头像
+                        AvatarView(
+                            name = myUsername,
+                            avatar = myAvatar,
+                            size = 34.dp,
+                            onClick = {
+                                avatarPicker.launch("image/*")
+                            }
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        // 名字点击改昵称
+                        Text(
+                            text = myUsername.ifBlank { "我" },
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1,
+                            color = MiuixTheme.colorScheme.onSurface
+                        )
+                    }
+                },
                 actions = {
-                    // 管理员入口（普通账号登录后仍可直接进后台）
+                    // 管理员入口
                     IconButton(
                         onClick = {
                             val saved = AuthStore.getAdmin(context)
@@ -202,7 +374,7 @@ fun ChatPage() {
                         onClick = {
                             AuthStore.clear(context)
                             context.startActivity(Intent(context, MainActivity::class.java))
-                            (context as? android.app.Activity)?.finishAffinity()
+                            (context as? Activity)?.finishAffinity()
                         },
                         modifier = Modifier.widthIn(min = 48.dp)
                     ) {
@@ -233,10 +405,11 @@ fun ChatPage() {
                         val now = formatTime("")
                         val tempMsg = Msg(
                             id = tempId,
-                            username = ApiClient.currentUsername,
+                            username = myUsername,
                             content = text,
                             time = now,
-                            pending = true
+                            pending = true,
+                            avatar = myAvatar
                         )
                         messages = messages + tempMsg
                         input = ""
@@ -249,7 +422,8 @@ fun ChatPage() {
                                     id = obj.optInt("id"),
                                     username = obj.optString("username"),
                                     content = obj.optString("content"),
-                                    time = formatTime(obj.optString("created_at", ""))
+                                    time = formatTime(obj.optString("created_at", "")),
+                                    avatar = obj.optString("avatar").takeIf { it.isNotBlank() }
                                 )
                                 if (newMsg.id > lastId) {
                                     messages = messages + newMsg
@@ -271,13 +445,12 @@ fun ChatPage() {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(horizontal = 12.dp)
-                .consumeWindowInsets(padding),
+                .padding(horizontal = 12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
             contentPadding = PaddingValues(vertical = 12.dp)
         ) {
             items(messages, key = { it.id }) { msg ->
-                MessageBubble(msg)
+                MessageItem(msg)
             }
         }
     }
@@ -353,6 +526,51 @@ fun ChatPage() {
     }
 }
 
+/**
+ * 圆形头像组件。
+ *
+ * @param name 昵称，无头像时显示首字符
+ * @param avatar 头像 base64 字符串，为空则显示首字符
+ * @param size 头像尺寸
+ * @param onClick 点击回调
+ */
+@Composable
+fun AvatarView(
+    name: String,
+    avatar: String?,
+    size: androidx.compose.ui.unit.Dp,
+    onClick: () -> Unit
+) {
+    val bitmap = remember(avatar) { avatarBitmap(avatar) }
+    Box(
+        modifier = Modifier
+            .size(size)
+            .clip(CircleShape)
+            .background(MiuixTheme.colorScheme.primary)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        if (bitmap != null) {
+            Image(
+                bitmap = bitmap,
+                contentDescription = "头像",
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            Text(
+                text = avatarInitial(name),
+                color = MiuixTheme.colorScheme.onPrimary,
+                fontSize = (size.value * 0.45f).sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
+    }
+}
+
 @Composable
 fun InputBottomBar(
     input: String,
@@ -417,6 +635,7 @@ fun InputBottomBar(
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
             )
             LaunchedEffect(errorTip) {
+                delay(1500)
                 onErrorShown()
             }
         }
@@ -424,47 +643,73 @@ fun InputBottomBar(
 }
 
 @Composable
-fun MessageBubble(msg: Msg) {
+fun MessageItem(msg: Msg) {
     val isMe = msg.username == ApiClient.currentUsername
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = if (isMe) Arrangement.End else Arrangement.Start
     ) {
-        Column(
-            modifier = Modifier
-                .widthIn(max = 280.dp)
-                .clip(RoundedCornerShape(16.dp))
-                .background(
-                    if (msg.pending) Color(0xFFEAF2FF)
-                    else if (isMe) MiuixTheme.colorScheme.primary
-                    else MiuixTheme.colorScheme.surfaceContainerHigh
-                )
-                .padding(horizontal = 14.dp, vertical = 10.dp)
-        ) {
-            if (!isMe) {
-                Text(
-                    text = msg.username,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = if (msg.pending) MiuixTheme.colorScheme.primary else Color(0xFF3482FF)
-                )
-                Spacer(modifier = Modifier.height(2.dp))
-            }
-            Text(
-                text = msg.content + if (msg.pending) "（发送中…）" else "",
-                fontSize = 15.sp,
-                color = if (isMe && !msg.pending) Color.White else MiuixTheme.colorScheme.onSurface,
-                lineHeight = 20.sp
+        if (!isMe) {
+            AvatarView(
+                name = msg.username,
+                avatar = msg.avatar,
+                size = 38.dp,
+                onClick = {}
             )
-            if (msg.time.isNotBlank()) {
-                Spacer(modifier = Modifier.height(2.dp))
+            Spacer(modifier = Modifier.width(8.dp))
+        }
+
+        Column(
+            modifier = Modifier.widthIn(max = 260.dp),
+            horizontalAlignment = if (isMe) Alignment.End else Alignment.Start
+        ) {
+            // 发送者名字
+            Text(
+                text = msg.username,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                color = if (msg.pending) MiuixTheme.colorScheme.primary else Color(0xFF3482FF),
+                modifier = Modifier.padding(horizontal = 4.dp)
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+
+            // 气泡
+            Column(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(
+                        if (msg.pending) Color(0xFFEAF2FF)
+                        else if (isMe) MiuixTheme.colorScheme.primary
+                        else MiuixTheme.colorScheme.surfaceContainerHigh
+                    )
+                    .padding(horizontal = 14.dp, vertical = 10.dp)
+            ) {
                 Text(
-                    text = msg.time,
-                    fontSize = 10.sp,
-                    color = if (isMe && !msg.pending) Color.White.copy(alpha = 0.75f)
-                    else MiuixTheme.colorScheme.onSurfaceVariantSummary
+                    text = msg.content + if (msg.pending) "（发送中…）" else "",
+                    fontSize = 15.sp,
+                    color = if (isMe && !msg.pending) Color.White else MiuixTheme.colorScheme.onSurface,
+                    lineHeight = 20.sp
                 )
+                if (msg.time.isNotBlank()) {
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = msg.time,
+                        fontSize = 10.sp,
+                        color = if (isMe && !msg.pending) Color.White.copy(alpha = 0.75f)
+                        else MiuixTheme.colorScheme.onSurfaceVariantSummary
+                    )
+                }
             }
+        }
+
+        if (isMe) {
+            Spacer(modifier = Modifier.width(8.dp))
+            AvatarView(
+                name = msg.username,
+                avatar = msg.avatar,
+                size = 38.dp,
+                onClick = {}
+            )
         }
     }
 }
