@@ -52,10 +52,11 @@ object ApiClient {
                     .post(form)
                     .build()
                 client.newCall(request).execute().use { response ->
-                    val text = response.body?.string() ?: "{}"
-                    val json = JSONObject(text)
-                    val ok = json.optBoolean("ok", false)
-                    return@withContext Pair(ok, json)
+                    val text = response.body?.string() ?: ""
+                    if (!response.isSuccessful) {
+                        return@withContext Pair(false, errJson(response.code, text))
+                    }
+                    return@withContext parseJson(text)
                 }
             } catch (e: IOException) {
                 return@withContext Pair(false, JSONObject().put("error", "无法连接服务器"))
@@ -76,8 +77,11 @@ object ApiClient {
                     .get()
                     .build()
                 client.newCall(request).execute().use { response ->
-                    val text = response.body?.string() ?: "{}"
-                    Pair(true, JSONObject(text))
+                    val text = response.body?.string() ?: ""
+                    if (!response.isSuccessful) {
+                        return@withContext Pair(false, errJson(response.code, text))
+                    }
+                    return@withContext parseJson(text)
                 }
             } catch (e: IOException) {
                 Pair(false, JSONObject().put("error", "无法连接服务器"))
@@ -85,6 +89,32 @@ object ApiClient {
                 Pair(false, JSONObject().put("error", "请求异常：${e.message}"))
             }
         }
+    }
+
+    /**
+     * 尝试把响应体解析为 JSON；失败时返回包含原文片段的错误对象。
+     */
+    private fun parseJson(text: String): Pair<Boolean, JSONObject> {
+        return try {
+            val json = JSONObject(text)
+            val ok = json.optBoolean("ok", false)
+            Pair(ok, json)
+        } catch (e: Exception) {
+            Pair(false, errJson(200, text))
+        }
+    }
+
+    /**
+     * 构造一个携带 HTTP 状态码和响应原文摘要的错误 JSON。
+     */
+    private fun errJson(code: Int, text: String): JSONObject {
+        val snippet = text.trim().take(120).replace("\n", " ")
+        val msg = if (snippet.isBlank()) {
+            "服务器返回错误（HTTP $code）"
+        } else {
+            "服务器返回错误（HTTP $code）：$snippet"
+        }
+        return JSONObject().put("error", msg)
     }
 
     /**
