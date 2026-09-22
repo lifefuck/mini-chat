@@ -9,20 +9,17 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -32,16 +29,19 @@ import kotlinx.coroutines.launch
 import org.json.JSONObject
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * 文字群聊页面。
  * - 禁止截图录屏、最近任务白屏（继承 BaseActivity）
- * - 底部输入框随键盘上抬
- * - 发送消息立即显示"发送中…"气泡
- * - 每次进入/新消息自动滚到底部
+ * - 底部输入框随键盘上抬，键盘弹出时聊天记录自动滚到底部
+ * - 发送消息立即显示"发送中…"气泡，成功后立即插入后端返回的正式消息
  * - 顶部提供退出账号和管理员登录/进入后台入口
  */
 class ChatActivity : BaseActivity() {
@@ -64,11 +64,21 @@ data class Msg(
     val pending: Boolean = false
 )
 
+/** 格式化时间为 HH:mm 显示。 */
+private fun formatTime(timeStr: String): String {
+    if (timeStr.length >= 16) {
+        return timeStr.substring(11, 16)
+    }
+    val sdf = SimpleDateFormat("HH:mm", Locale.getDefault())
+    return sdf.format(Date())
+}
+
 @Composable
 fun ChatPage() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
+    val density = LocalDensity.current
 
     var messages by remember { mutableStateOf(listOf<Msg>()) }
     var input by remember { mutableStateOf("") }
@@ -84,7 +94,8 @@ fun ChatPage() {
     var adminLogging by remember { mutableStateOf(false) }
     var adminLoginError by remember { mutableStateOf("") }
     val hasAdminSaved = remember { AuthStore.getAdmin(context) != null }
-    var hasAdmin by remember { mutableStateOf(hasAdminSaved) }
+    var needsAdminRefresh by remember { mutableIntStateOf(0) }
+    val hasAdmin = remember(needsAdminRefresh) { AuthStore.getAdmin(context) != null }
 
     // 加载历史消息
     suspend fun loadMessages(): Boolean {
@@ -96,7 +107,7 @@ fun ChatPage() {
                 id = o.optInt("id"),
                 username = o.optString("username"),
                 content = o.optString("content"),
-                time = o.optString("created_at", "").takeLast(5)
+                time = formatTime(o.optString("created_at", ""))
             )
         }
         messages = loaded
@@ -118,7 +129,7 @@ fun ChatPage() {
                     id = o.optInt("id"),
                     username = o.optString("username"),
                     content = o.optString("content"),
-                    time = o.optString("created_at", "").takeLast(5)
+                    time = formatTime(o.optString("created_at", ""))
                 )
             }
             if (new.isNotEmpty()) {
@@ -136,6 +147,14 @@ fun ChatPage() {
         }
     }
 
+    // 键盘弹出时继续滚到底部，确保聊天记录可见
+    val imeBottom = WindowInsets.ime.getBottom(density)
+    LaunchedEffect(imeBottom) {
+        if (imeBottom > 0 && messages.isNotEmpty()) {
+            listState.animateScrollToItem(messages.size - 1)
+        }
+    }
+
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         topBar = {
@@ -143,16 +162,14 @@ fun ChatPage() {
                 title = "life的群组",
                 subtitle = "",
                 actions = {
-                    // 管理员入口
-                    IconButton(onClick = {
-                        if (hasAdmin) {
-                            context.startActivity(Intent(context, AdminActivity::class.java))
-                        } else {
+                    // 管理员入口（普通账号登录后仍可直接进后台）
+                    IconButton(
+                        onClick = {
                             val saved = AuthStore.getAdmin(context)
                             if (saved != null) {
                                 scope.launch {
                                     adminLogging = true
-                                    val (ok, json) = ApiClient.post(
+                                    val (ok, _) = ApiClient.post(
                                         "/api/admin-login",
                                         mapOf("username" to saved.account, "password" to saved.password)
                                     )
@@ -160,10 +177,8 @@ fun ChatPage() {
                                     if (ok) {
                                         context.startActivity(Intent(context, AdminActivity::class.java))
                                     } else {
-                                        adminAccount = saved.account
-                                        adminPwd = saved.password
                                         showAdminLogin = true
-                                        adminLoginError = ApiClient.errorText(json)
+                                        adminLoginError = "管理员凭证已过期，请重新登录"
                                     }
                                 }
                             } else {
@@ -172,23 +187,29 @@ fun ChatPage() {
                                 showAdminLogin = true
                                 adminLoginError = ""
                             }
-                        }
-                    }) {
+                        },
+                        modifier = Modifier.widthIn(min = 48.dp)
+                    ) {
                         Text(
-                            text = if (hasAdmin) "后台" else "管理员",
-                            fontSize = 14.sp,
+                            text = if (hasAdmin) "后台" else "管理",
+                            fontSize = 13.sp,
+                            maxLines = 1,
                             color = MiuixTheme.colorScheme.primary
                         )
                     }
                     // 退出账号
-                    IconButton(onClick = {
-                        AuthStore.clear(context)
-                        context.startActivity(Intent(context, MainActivity::class.java))
-                        (context as? android.app.Activity)?.finishAffinity()
-                    }) {
+                    IconButton(
+                        onClick = {
+                            AuthStore.clear(context)
+                            context.startActivity(Intent(context, MainActivity::class.java))
+                            (context as? android.app.Activity)?.finishAffinity()
+                        },
+                        modifier = Modifier.widthIn(min = 48.dp)
+                    ) {
                         Text(
                             text = "退出",
-                            fontSize = 14.sp,
+                            fontSize = 13.sp,
+                            maxLines = 1,
                             color = Color(0xFFE94634)
                         )
                     }
@@ -196,7 +217,6 @@ fun ChatPage() {
             )
         },
         bottomBar = {
-            // 把输入区放在 bottomBar，键盘弹出时自动上抬
             InputBottomBar(
                 input = input,
                 onInputChange = { input = it },
@@ -210,18 +230,33 @@ fun ChatPage() {
                     errorTip = ""
                     scope.launch {
                         val tempId = -(System.currentTimeMillis() % 100000).toInt()
+                        val now = formatTime("")
                         val tempMsg = Msg(
                             id = tempId,
                             username = ApiClient.currentUsername,
                             content = text,
-                            time = "",
+                            time = now,
                             pending = true
                         )
                         messages = messages + tempMsg
                         input = ""
                         val (ok, json) = ApiClient.post("/api/send", mapOf("content" to text))
                         messages = messages.filter { it.id != tempId }
-                        if (!ok) {
+                        if (ok) {
+                            val obj = json.optJSONObject("message")
+                            if (obj != null) {
+                                val newMsg = Msg(
+                                    id = obj.optInt("id"),
+                                    username = obj.optString("username"),
+                                    content = obj.optString("content"),
+                                    time = formatTime(obj.optString("created_at", ""))
+                                )
+                                if (newMsg.id > lastId) {
+                                    messages = messages + newMsg
+                                    lastId = newMsg.id
+                                }
+                            }
+                        } else {
                             errorTip = ApiClient.errorText(json)
                             input = text
                         }
@@ -294,8 +329,8 @@ fun ChatPage() {
                             adminLogging = false
                             if (ok) {
                                 AuthStore.saveAdmin(context, adminAccount, adminPwd)
+                                needsAdminRefresh += 1
                                 showAdminLogin = false
-                                hasAdmin = true
                                 context.startActivity(Intent(context, AdminActivity::class.java))
                             } else {
                                 adminLoginError = ApiClient.errorText(json)
@@ -308,7 +343,7 @@ fun ChatPage() {
                 }
             },
             dismissButton = {
-                TextButton(
+                androidx.compose.material3.TextButton(
                     onClick = { if (!adminLogging) showAdminLogin = false }
                 ) {
                     Text("取消")

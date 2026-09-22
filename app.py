@@ -545,12 +545,18 @@ def api_send():
     content = content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
     db = get_db()
-    db.execute(
+    cursor = db.cursor()
+    cursor.execute(
         "INSERT INTO messages (user_id, username, content) VALUES (?, ?, ?)",
         (user["id"], user["username"], content),
     )
+    msg_id = cursor.lastrowid
+    row = db.execute(
+        "SELECT id, username, content, strftime('%Y-%m-%d %H:%M:%S', created_at) AS created_at "
+        "FROM messages WHERE id = ?", (msg_id,)
+    ).fetchone()
     db.commit()
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "message": dict(row)})
 
 
 @app.route("/api/admin/mute", methods=["POST"])
