@@ -1,5 +1,6 @@
 package cc.lifefuck.minichat
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -8,9 +9,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
@@ -20,20 +19,23 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
+import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 /**
  * 管理员后台：审批/冻结/改名/重置密码/删除用户 + 全员禁言开关。
+ * 顶部提供退出账号入口。
  */
 class AdminActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -58,6 +60,7 @@ data class UserItem(
 
 @Composable
 fun AdminPage() {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
     var users by remember { mutableStateOf(listOf<UserItem>()) }
@@ -169,23 +172,22 @@ fun AdminPage() {
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         topBar = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 48.dp, start = 16.dp, end = 16.dp, bottom = 8.dp)
-            ) {
-                Text(
-                    text = "管理后台",
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MiuixTheme.colorScheme.onSurface
-                )
-                Text(
-                    text = "管理员账号不能参与聊天",
-                    fontSize = 12.sp,
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary
-                )
-            }
+            TopAppBar(
+                title = "管理后台",
+                subtitle = "管理员账号不能参与聊天",
+                actions = {
+                    IconButton(
+                        onClick = {
+                            AuthStore.clear(context)
+                            context.startActivity(Intent(context, MainActivity::class.java))
+                            (context as? android.app.Activity)?.finishAffinity()
+                        },
+                        content = {
+                            Text("退出", fontSize = 14.sp)
+                        }
+                    )
+                }
+            )
         }
     ) { paddingValues ->
         Column(
@@ -303,20 +305,20 @@ fun UserCard(
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 if (user.status != "approved") {
-                    CompactAction("通过", onClick = onApprove, color = Color(0xFF2E7D32))
+                    CompactAction("通过", onClick = onApprove)
                 } else {
-                    CompactAction("冻结", onClick = onReject, color = Color(0xFFFF6D00))
+                    CompactAction("冻结", onClick = onReject)
                 }
-                CompactAction("改名", onClick = onRename, color = MiuixTheme.colorScheme.primary)
-                CompactAction("重置密码", onClick = onResetPwd, color = MiuixTheme.colorScheme.primary)
-                CompactAction("删除", onClick = onDelete, color = Color(0xFFE94634))
+                CompactAction("改名", onClick = onRename)
+                CompactAction("重置密码", onClick = onResetPwd)
+                CompactAction("删除", onClick = onDelete)
             }
         }
     }
 }
 
 @Composable
-fun CompactAction(text: String, onClick: () -> Unit, color: Color) {
+fun CompactAction(text: String, onClick: () -> Unit) {
     TextButton(
         onClick = onClick,
         modifier = Modifier.heightIn(min = 32.dp),

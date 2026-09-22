@@ -32,6 +32,10 @@
             android:name=".AdminActivity"
             android:windowSoftInputMode="adjustResize" />
 
+        <activity
+            android:name=".PendingActivity"
+            android:windowSoftInputMode="adjustResize" />
+
     </application>
 
 </manifest>

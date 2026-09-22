@@ -1,5 +1,6 @@
 package cc.lifefuck.minichat
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -25,11 +26,14 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import top.yukonga.miuix.kmp.basic.Button
+import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.TextField
+import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 /**
  * 文字群聊页面：Miuix 风格消息气泡 + 底部输入框 + 全员禁言开关响应。
+ * 顶部提供退出账号入口。
  */
 class ChatActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -52,6 +56,7 @@ data class Msg(
 
 @Composable
 fun ChatPage() {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
 
@@ -84,23 +89,22 @@ fun ChatPage() {
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         topBar = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 48.dp, start = 16.dp, end = 16.dp, bottom = 8.dp)
-            ) {
-                Text(
-                    text = "life的群组",
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MiuixTheme.colorScheme.onSurface
-                )
-                Text(
-                    text = "当前用户：${ApiClient.currentUsername.ifBlank { "我" }}",
-                    fontSize = 12.sp,
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary
-                )
-            }
+            TopAppBar(
+                title = "life的群组",
+                subtitle = "当前用户：${ApiClient.currentUsername.ifBlank { "我" }}",
+                actions = {
+                    IconButton(
+                        onClick = {
+                            AuthStore.clear(context)
+                            context.startActivity(Intent(context, MainActivity::class.java))
+                            (context as? android.app.Activity)?.finishAffinity()
+                        },
+                        content = {
+                            Text("退出", fontSize = 14.sp)
+                        }
+                    )
+                }
+            )
         },
         bottomBar = {
             if (!isMuted) {

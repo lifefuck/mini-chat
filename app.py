@@ -5,6 +5,7 @@
 import os
 import sqlite3
 import secrets
+from datetime import timedelta
 from functools import wraps
 
 from flask import (
@@ -385,14 +386,19 @@ def api_login():
         return jsonify({"ok": False, "error": "密码错误"})
 
     session["user_id"] = row["id"]
+    session.permanent = True
+    app.permanent_session_lifetime = timedelta(days=3)
     return jsonify({"ok": True, "username": row["username"], "status": row["status"]})
 
 
 @app.route("/api/admin-login", methods=["POST"])
 def api_admin_login():
-    """JSON API：管理员登录。"""
+    """JSON API：管理员登录（兼容旧接口）。"""
     username = request.form.get("username", "").strip()
     password = request.form.get("password", "")
+    if not username or not password:
+        return jsonify({"ok": False, "error": "请填写完整"})
+
     db = get_db()
     row = db.execute(
         "SELECT id, username, password_hash, role FROM users WHERE username = ? AND role = 'admin'",
@@ -403,7 +409,44 @@ def api_admin_login():
     if not check_password_hash(row["password_hash"], password):
         return jsonify({"ok": False, "error": "管理员密码错误"})
     session["user_id"] = row["id"]
+    session.permanent = True
+    app.permanent_session_lifetime = timedelta(days=3)
     return jsonify({"ok": True})
+
+
+@app.route("/api/unified-login", methods=["POST"])
+def api_unified_login():
+    """JSON API：统一账号/QQ号登录，自动区分管理员与普通用户。"""
+    account = request.form.get("account", "").strip()
+    password = request.form.get("password", "")
+    if not account or not password:
+        return jsonify({"ok": False, "error": "请填写账号和密码"})
+
+    db = get_db()
+    row = db.execute(
+        """
+        SELECT id, username, qq, role, status, password_hash
+        FROM users
+        WHERE (username = ? AND role = 'admin')
+           OR (qq = ? AND role = 'user')
+        """,
+        (account, account),
+    ).fetchone()
+
+    if not row:
+        return jsonify({"ok": False, "error": "账号不存在"})
+    if not check_password_hash(row["password_hash"], password):
+        return jsonify({"ok": False, "error": "密码错误"})
+
+    session["user_id"] = row["id"]
+    session.permanent = True
+    app.permanent_session_lifetime = timedelta(days=3)
+    return jsonify({
+        "ok": True,
+        "username": row["username"],
+        "role": row["role"],
+        "status": row["status"],
+    })
 
 
 @app.route("/api/change-username", methods=["POST"])
@@ -487,8 +530,12 @@ def api_send():
     if is_muted():
         return jsonify({"ok": False, "error": "当前群聊已开启全员禁言"})
     user = current_user()
-    data = request.get_json(silent=True) or {}
-    content = data.get("content", "").strip()
+    # 兼容客户端用表单或 JSON 发送
+    if request.is_json:
+        data = request.get_json(silent=True) or {}
+        content = data.get("content", "").strip()
+    else:
+        content = request.form.get("content", "").strip()
     if not content:
         return jsonify({"ok": False, "error": "消息内容不能为空"})
     if len(content) > 500:
