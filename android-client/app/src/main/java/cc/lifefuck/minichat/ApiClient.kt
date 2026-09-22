@@ -118,6 +118,42 @@ object ApiClient {
     }
 
     /**
+     * 健康检查：探测服务器是否在线。
+     *
+     * @return Pair(是否在线, 最后一次错误描述)，在线时错误描述为空
+     */
+    suspend fun checkHealth(): Pair<Boolean, String> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val request = Request.Builder()
+                    .url("$BASE_URL/api/health")
+                    .get()
+                    .build()
+                client.newCall(request).execute().use { response ->
+                    val text = response.body?.string() ?: ""
+                    if (!response.isSuccessful) {
+                        return@withContext Pair(false, "服务器返回错误（HTTP ${response.code}）")
+                    }
+                    return@withContext try {
+                        val json = JSONObject(text)
+                        if (json.optBoolean("ok", false)) {
+                            Pair(true, "")
+                        } else {
+                            Pair(false, "服务器状态异常")
+                        }
+                    } catch (_: Exception) {
+                        Pair(false, "服务器返回非 JSON 数据：${text.take(80)}")
+                    }
+                }
+            } catch (e: IOException) {
+                return@withContext Pair(false, "无法连接服务器：${e.message ?: "网络不可达"}")
+            } catch (e: Exception) {
+                return@withContext Pair(false, "检查服务器失败：${e.message}")
+            }
+        }
+    }
+
+    /**
      * 从 JSON 里取出后端错误文案；为空时返回默认提示。
      */
     fun errorText(json: JSONObject?): String {

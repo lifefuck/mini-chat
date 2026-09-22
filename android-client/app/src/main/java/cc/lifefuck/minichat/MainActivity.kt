@@ -75,6 +75,12 @@ fun MainPage() {
         Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
     }
 
+    // 自动登录成功后关闭登录页，避免手动登录再弹一次
+    fun jumpAndFinish(json: JSONObject) {
+        handleLoginResult(context, json) { errorText = it }
+        (context as? android.app.Activity)?.finish()
+    }
+
     // 启动时检查 3 天内是否登录过，自动登录
     LaunchedEffect(Unit) {
         val saved = AuthStore.get(context)
@@ -89,7 +95,7 @@ fun MainPage() {
             autoLogging = false
             if (ok) {
                 AuthStore.save(context, saved.account, saved.password, json.optString("role", ""))
-                handleLoginResult(context, json) { errorText = it }
+                jumpAndFinish(json)
             } else {
                 AuthStore.clear(context)
                 errorText = ApiClient.errorText(json)
@@ -136,6 +142,9 @@ fun MainPage() {
                 )
             }
 
+            // 自动登录期间禁用 Tab 切换和输入框，防止手动登录冲突
+            val controlsEnabled = !autoLogging && !isLoading
+
             TabRow(
                 selectedTabIndex = selectedTab,
                 modifier = Modifier.fillMaxWidth().padding(top = 12.dp)
@@ -144,10 +153,12 @@ fun MainPage() {
                     Tab(
                         selected = selectedTab == index,
                         onClick = {
+                            if (!controlsEnabled) return@Tab
                             errorText = ""
                             selectedTab = index
                         },
-                        text = { Text(title, fontSize = 15.sp) }
+                        text = { Text(title, fontSize = 15.sp) },
+                        enabled = controlsEnabled
                     )
                 }
             }
@@ -159,21 +170,30 @@ fun MainPage() {
                     Column(modifier = Modifier.padding(16.dp)) {
                         when (tab) {
                             0 -> LoginForm(
-                                account = loginAccount, onAccount = { loginAccount = it },
-                                pwd = loginPwd, onPwd = { loginPwd = it }
+                                account = loginAccount,
+                                onAccount = { if (controlsEnabled) loginAccount = it },
+                                pwd = loginPwd,
+                                onPwd = { if (controlsEnabled) loginPwd = it },
+                                enabled = controlsEnabled
                             )
                             1 -> RegisterForm(
-                                qq = regQq, onQq = { regQq = it },
-                                name = regName, onName = { regName = it },
-                                pwd = regPwd, onPwd = { regPwd = it },
-                                pwd2 = regPwd2, onPwd2 = { regPwd2 = it }
+                                qq = regQq,
+                                onQq = { if (controlsEnabled) regQq = it },
+                                name = regName,
+                                onName = { if (controlsEnabled) regName = it },
+                                pwd = regPwd,
+                                onPwd = { if (controlsEnabled) regPwd = it },
+                                pwd2 = regPwd2,
+                                onPwd2 = { if (controlsEnabled) regPwd2 = it },
+                                enabled = controlsEnabled
                             )
                         }
 
                         Spacer(modifier = Modifier.height(12.dp))
                         Button(
+                            enabled = controlsEnabled,
                             onClick = {
-                                if (isLoading) return@Button
+                                if (!controlsEnabled) return@Button
                                 scope.launch {
                                     isLoading = true
                                     errorText = ""
@@ -294,14 +314,21 @@ private fun handleLoginResult(context: android.content.Context, json: JSONObject
 }
 
 @Composable
-fun AuthField(value: String, onChange: (String) -> Unit, label: String, isPassword: Boolean = false) {
+fun AuthField(
+    value: String,
+    onChange: (String) -> Unit,
+    label: String,
+    isPassword: Boolean = false,
+    enabled: Boolean = true
+) {
     TextField(
         value = value,
         onValueChange = onChange,
         label = label,
         modifier = Modifier.fillMaxWidth(),
         visualTransformation = if (isPassword) PasswordVisualTransformation() else VisualTransformation.None,
-        singleLine = true
+        singleLine = true,
+        enabled = enabled
     )
 }
 
@@ -311,11 +338,17 @@ fun Title(text: String) {
 }
 
 @Composable
-fun LoginForm(account: String, onAccount: (String) -> Unit, pwd: String, onPwd: (String) -> Unit) {
+fun LoginForm(
+    account: String,
+    onAccount: (String) -> Unit,
+    pwd: String,
+    onPwd: (String) -> Unit,
+    enabled: Boolean = true
+) {
     Title("账号登录")
-    AuthField(account, onAccount, "QQ 号或管理员账号")
+    AuthField(account, onAccount, "QQ 号或管理员账号", enabled = enabled)
     Spacer(modifier = Modifier.height(10.dp))
-    AuthField(pwd, onPwd, "密码", isPassword = true)
+    AuthField(pwd, onPwd, "密码", isPassword = true, enabled = enabled)
 }
 
 @Composable
@@ -323,14 +356,15 @@ fun RegisterForm(
     qq: String, onQq: (String) -> Unit,
     name: String, onName: (String) -> Unit,
     pwd: String, onPwd: (String) -> Unit,
-    pwd2: String, onPwd2: (String) -> Unit
+    pwd2: String, onPwd2: (String) -> Unit,
+    enabled: Boolean = true
 ) {
     Title("注册账号")
-    AuthField(qq, onQq, "QQ 号")
+    AuthField(qq, onQq, "QQ 号", enabled = enabled)
     Spacer(modifier = Modifier.height(10.dp))
-    AuthField(name, onName, "用户名")
+    AuthField(name, onName, "用户名", enabled = enabled)
     Spacer(modifier = Modifier.height(10.dp))
-    AuthField(pwd, onPwd, "密码", isPassword = true)
+    AuthField(pwd, onPwd, "密码", isPassword = true, enabled = enabled)
     Spacer(modifier = Modifier.height(10.dp))
-    AuthField(pwd2, onPwd2, "确认密码", isPassword = true)
+    AuthField(pwd2, onPwd2, "确认密码", isPassword = true, enabled = enabled)
 }

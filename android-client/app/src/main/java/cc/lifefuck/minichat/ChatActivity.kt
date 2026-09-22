@@ -38,6 +38,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import android.content.ClipData
+import android.content.ClipboardManager
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
@@ -174,6 +176,11 @@ fun ChatPage() {
     var errorTip by remember { mutableStateOf("") }
     var lastId by remember { mutableStateOf(0) }
 
+    // 服务器连接状态（前台每秒轮询）
+    var isOnline by remember { mutableStateOf(true) }
+    var connectionError by remember { mutableStateOf("") }
+    var lastToastTime by remember { mutableStateOf(0L) }
+
     // 当前登录用户信息（昵称/头像）
     var myUsername by remember { mutableStateOf(ApiClient.currentUsername) }
     var myAvatar by remember { mutableStateOf<String?>(null) }
@@ -253,6 +260,23 @@ fun ChatPage() {
         lastId = loaded.maxOfOrNull { it.id } ?: 0
         muted = json.optBoolean("muted", false)
         return true
+    }
+
+    // 前台每秒检测服务器状态
+    LaunchedEffect(Unit) {
+        while (true) {
+            val (online, err) = ApiClient.checkHealth()
+            isOnline = online
+            connectionError = if (online) "" else err
+            if (!online) {
+                val now = System.currentTimeMillis()
+                if (now - lastToastTime > 3000) {
+                    Toast.makeText(context, "未连接到服务器", Toast.LENGTH_SHORT).show()
+                    lastToastTime = now
+                }
+            }
+            delay(1000)
+        }
     }
 
     // 轮询新消息
@@ -398,6 +422,13 @@ fun ChatPage() {
                 onErrorShown = { errorTip = "" },
                 onSend = { text ->
                     if (text.isEmpty() || isSending) return@InputBottomBar
+
+                    // 发送前强制检查服务器状态
+                    if (!isOnline) {
+                        errorTip = connectionError.ifBlank { "未连接到服务器" }
+                        return@InputBottomBar
+                    }
+
                     isSending = true
                     errorTip = ""
                     scope.launch {
@@ -440,17 +471,28 @@ fun ChatPage() {
             )
         }
     ) { padding ->
-        LazyColumn(
-            state = listState,
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(horizontal = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-            contentPadding = PaddingValues(vertical = 12.dp)
         ) {
-            items(messages, key = { it.id }) { msg ->
-                MessageItem(msg)
+            // 未连接服务器提示横幅
+            if (!isOnline && connectionError.isNotBlank()) {
+                ConnectionBanner(error = connectionError)
+            }
+
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(vertical = 12.dp)
+            ) {
+                items(messages, key = { it.id }) { msg ->
+                    MessageItem(msg)
+                }
             }
         }
     }
@@ -638,6 +680,48 @@ fun InputBottomBar(
                 delay(1500)
                 onErrorShown()
             }
+        }
+    }
+}
+
+/**
+ * 未连接服务器提示横幅。
+ *
+ * 点击可将完整报错文案复制到剪贴板。
+ */
+@Composable
+fun ConnectionBanner(error: String) {
+    val context = LocalContext.current
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .clickable {
+                val cm = context.getSystemService(ClipboardManager::class.java)
+                cm?.setPrimaryClip(ClipData.newPlainText("服务器错误", error))
+                Toast.makeText(context, "已复制报错：$error", Toast.LENGTH_LONG).show()
+            },
+        cornerRadius = 10.dp
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color(0xFFFFF2F0))
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "⚠ 未连接到服务器",
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color(0xFFE94634),
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                text = "点击复制报错",
+                fontSize = 12.sp,
+                color = Color(0xFFE94634).copy(alpha = 0.8f)
+            )
         }
     }
 }

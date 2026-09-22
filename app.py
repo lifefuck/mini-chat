@@ -714,6 +714,12 @@ def api_admin_change_username(user_id):
     return jsonify({"ok": True})
 
 
+@app.route("/api/health", methods=["GET"])
+def api_health():
+    """健康检查：客户端轮询服务器是否在线。"""
+    return jsonify({"ok": True})
+
+
 # 启动入口 ================================================
 if __name__ == "__main__":
     init_db()
