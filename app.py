@@ -448,7 +448,7 @@ def api_unified_login():
     db = get_db()
     row = db.execute(
         """
-        SELECT id, username, qq, role, status, password_hash
+        SELECT id, username, qq, role, status, password_hash, avatar
         FROM users
         WHERE (username = ? AND role = 'admin')
            OR (qq = ? AND role = 'user')
