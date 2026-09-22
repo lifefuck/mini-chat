@@ -225,6 +225,10 @@ fun ChatPage() {
             )
             if (ok) {
                 myAvatar = base64
+                // 刷新历史消息中所有自己消息的头像，让用户立即看到更新
+                messages = messages.map {
+                    if (it.username == myUsername) it.copy(avatar = base64) else it
+                }
                 Toast.makeText(context, "头像已更新", Toast.LENGTH_SHORT).show()
             } else {
                 Toast.makeText(context, ApiClient.errorText(json), Toast.LENGTH_SHORT).show()
@@ -324,6 +328,7 @@ fun ChatPage() {
         topBar = {
             TopAppBar(
                 title = "life的群组",
+                subtitle = "晚上属于高峰时段，老外全起床了，服务器卡很正常",
                 navigationIcon = {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
