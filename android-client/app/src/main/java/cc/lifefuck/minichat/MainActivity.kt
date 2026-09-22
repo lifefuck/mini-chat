@@ -2,7 +2,6 @@ package cc.lifefuck.minichat
 
 import android.content.Intent
 import android.os.Bundle
-import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -35,14 +34,9 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
  * 统一登录入口兼容 QQ 号和管理员账号，自动跳转对应页面。
  * 使用 Miuix 组件与 Material3 TabRow（避免原版切换滑块卡顿/失效）。
  */
-class MainActivity : ComponentActivity() {
+class MainActivity : BaseActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // 禁止截图和录屏
-        window.setFlags(
-            WindowManager.LayoutParams.FLAG_SECURE,
-            WindowManager.LayoutParams.FLAG_SECURE
-        )
         enableEdgeToEdge()
         setContent {
             MiuixTheme {

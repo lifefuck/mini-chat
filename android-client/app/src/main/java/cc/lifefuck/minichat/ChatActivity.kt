@@ -1,10 +1,7 @@
 package cc.lifefuck.minichat
 
-import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
-import android.view.WindowManager
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
@@ -12,8 +9,11 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -24,30 +24,29 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import top.yukonga.miuix.kmp.basic.Button
-import top.yukonga.miuix.kmp.basic.IconButton
+import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 /**
- * 文字群聊页面：Miuix 风格消息气泡 + 底部输入框 + 全员禁言开关响应。
- * 顶部提供退出账号和管理员入口。
- * 禁止截图/录屏、发送消息即时显示 pending 状态。
+ * 文字群聊页面。
+ * - 禁止截图录屏、最近任务白屏（继承 BaseActivity）
+ * - 底部输入框随键盘上抬
+ * - 发送消息立即显示"发送中…"气泡
+ * - 每次进入/新消息自动滚到底部
+ * - 顶部提供退出账号和管理员登录/进入后台入口
  */
-class ChatActivity : ComponentActivity() {
+class ChatActivity : BaseActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // 禁止截图和录屏
-        window.setFlags(
-            WindowManager.LayoutParams.FLAG_SECURE,
-            WindowManager.LayoutParams.FLAG_SECURE
-        )
         enableEdgeToEdge()
         setContent {
             MiuixTheme {
@@ -72,60 +71,189 @@ fun ChatPage() {
     val listState = rememberLazyListState()
 
     var messages by remember { mutableStateOf(listOf<Msg>()) }
-    var lastId by remember { mutableStateOf(0) }
     var input by remember { mutableStateOf("") }
-    var isMuted by remember { mutableStateOf(false) }
-    var errorText by remember { mutableStateOf("") }
     var isSending by remember { mutableStateOf(false) }
-    var tempId by remember { mutableIntStateOf(-1) }
+    var muted by remember { mutableStateOf(false) }
+    var errorTip by remember { mutableStateOf("") }
+    var lastId by remember { mutableStateOf(0) }
 
-    // 管理员登录弹窗
+    // 管理员入口状态
     var showAdminLogin by remember { mutableStateOf(false) }
     var adminAccount by remember { mutableStateOf("") }
-    var adminPassword by remember { mutableStateOf("") }
-    var adminError by remember { mutableStateOf("") }
-    var adminChecking by remember { mutableStateOf(false) }
+    var adminPwd by remember { mutableStateOf("") }
+    var adminLogging by remember { mutableStateOf(false) }
+    var adminLoginError by remember { mutableStateOf("") }
+    val hasAdminSaved = remember { AuthStore.getAdmin(context) != null }
+    var hasAdmin by remember { mutableStateOf(hasAdminSaved) }
 
-    // 首次进入滚动到底
-    var firstLoad by remember { mutableStateOf(true) }
+    // 加载历史消息
+    suspend fun loadMessages(): Boolean {
+        val (_, json) = ApiClient.get("/api/messages?last_id=0")
+        val arr = json.optJSONArray("messages") ?: return false
+        val loaded = (0 until arr.length()).map { i ->
+            val o = arr.getJSONObject(i)
+            Msg(
+                id = o.optInt("id"),
+                username = o.optString("username"),
+                content = o.optString("content"),
+                time = o.optString("created_at", "").takeLast(5)
+            )
+        }
+        messages = loaded
+        lastId = loaded.maxOfOrNull { it.id } ?: 0
+        muted = json.optBoolean("muted", false)
+        return true
+    }
 
-    // 轮询消息
+    // 轮询新消息
     LaunchedEffect(Unit) {
+        loadMessages()
         while (true) {
-            val (ok, json) = ApiClient.get("/api/messages?last_id=$lastId")
-            if (ok) {
-                val new = parseMessages(json)
-                if (new.isNotEmpty()) {
-                    messages = (messages + new).distinctBy { it.id }
-                    lastId = messages.maxOf { it.id }
-                    scope.launch {
-                        listState.animateScrollToItem(messages.size - 1)
-                    }
-                }
-                isMuted = json.optBoolean("muted", false)
-                if (firstLoad) {
-                    firstLoad = false
-                    if (messages.isNotEmpty()) {
-                        scope.launch { listState.scrollToItem(messages.size - 1) }
-                    }
-                }
-            }
             delay(1500)
+            val (_, json) = ApiClient.get("/api/messages?last_id=$lastId")
+            val arr = json.optJSONArray("messages") ?: continue
+            val new = (0 until arr.length()).map { i ->
+                val o = arr.getJSONObject(i)
+                Msg(
+                    id = o.optInt("id"),
+                    username = o.optString("username"),
+                    content = o.optString("content"),
+                    time = o.optString("created_at", "").takeLast(5)
+                )
+            }
+            if (new.isNotEmpty()) {
+                messages = messages + new
+                lastId = new.maxOf { it.id }
+            }
+            muted = json.optBoolean("muted", false)
+        }
+    }
+
+    // 消息列表变化后滚到底部
+    LaunchedEffect(messages.size) {
+        if (messages.isNotEmpty()) {
+            listState.animateScrollToItem(messages.size - 1)
+        }
+    }
+
+    Scaffold(
+        modifier = Modifier.fillMaxSize(),
+        topBar = {
+            TopAppBar(
+                title = "life的群组",
+                subtitle = "",
+                actions = {
+                    // 管理员入口
+                    IconButton(onClick = {
+                        if (hasAdmin) {
+                            context.startActivity(Intent(context, AdminActivity::class.java))
+                        } else {
+                            val saved = AuthStore.getAdmin(context)
+                            if (saved != null) {
+                                scope.launch {
+                                    adminLogging = true
+                                    val (ok, json) = ApiClient.post(
+                                        "/api/admin-login",
+                                        mapOf("username" to saved.account, "password" to saved.password)
+                                    )
+                                    adminLogging = false
+                                    if (ok) {
+                                        context.startActivity(Intent(context, AdminActivity::class.java))
+                                    } else {
+                                        adminAccount = saved.account
+                                        adminPwd = saved.password
+                                        showAdminLogin = true
+                                        adminLoginError = ApiClient.errorText(json)
+                                    }
+                                }
+                            } else {
+                                adminAccount = ""
+                                adminPwd = ""
+                                showAdminLogin = true
+                                adminLoginError = ""
+                            }
+                        }
+                    }) {
+                        Text(
+                            text = if (hasAdmin) "后台" else "管理员",
+                            fontSize = 14.sp,
+                            color = MiuixTheme.colorScheme.primary
+                        )
+                    }
+                    // 退出账号
+                    IconButton(onClick = {
+                        AuthStore.clear(context)
+                        context.startActivity(Intent(context, MainActivity::class.java))
+                        (context as? android.app.Activity)?.finishAffinity()
+                    }) {
+                        Text(
+                            text = "退出",
+                            fontSize = 14.sp,
+                            color = Color(0xFFE94634)
+                        )
+                    }
+                }
+            )
+        },
+        bottomBar = {
+            // 把输入区放在 bottomBar，键盘弹出时自动上抬
+            InputBottomBar(
+                input = input,
+                onInputChange = { input = it },
+                muted = muted,
+                isSending = isSending,
+                errorTip = errorTip,
+                onErrorShown = { errorTip = "" },
+                onSend = { text ->
+                    if (text.isEmpty() || isSending) return@InputBottomBar
+                    isSending = true
+                    errorTip = ""
+                    scope.launch {
+                        val tempId = -(System.currentTimeMillis() % 100000).toInt()
+                        val tempMsg = Msg(
+                            id = tempId,
+                            username = ApiClient.currentUsername,
+                            content = text,
+                            time = "",
+                            pending = true
+                        )
+                        messages = messages + tempMsg
+                        input = ""
+                        val (ok, json) = ApiClient.post("/api/send", mapOf("content" to text))
+                        messages = messages.filter { it.id != tempId }
+                        if (!ok) {
+                            errorTip = ApiClient.errorText(json)
+                            input = text
+                        }
+                        isSending = false
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        LazyColumn(
+            state = listState,
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(horizontal = 12.dp)
+                .consumeWindowInsets(padding),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            contentPadding = PaddingValues(vertical = 12.dp)
+        ) {
+            items(messages, key = { it.id }) { msg ->
+                MessageBubble(msg)
+            }
         }
     }
 
     // 管理员登录弹窗
     if (showAdminLogin) {
         AlertDialog(
-            onDismissRequest = {
-                if (!adminChecking) showAdminLogin = false
-            },
-            title = { Text("管理员登录") },
+            onDismissRequest = { if (!adminLogging) showAdminLogin = false },
+            title = { Text("登录管理员") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (adminError.isNotBlank()) {
-                        Text(adminError, color = Color(0xFFE94634), fontSize = 13.sp)
-                    }
+                Column {
                     TextField(
                         value = adminAccount,
                         onValueChange = { adminAccount = it },
@@ -133,185 +261,128 @@ fun ChatPage() {
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true
                     )
+                    Spacer(modifier = Modifier.height(8.dp))
                     TextField(
-                        value = adminPassword,
-                        onValueChange = { adminPassword = it },
-                        label = "管理员密码",
+                        value = adminPwd,
+                        onValueChange = { adminPwd = it },
+                        label = "密码",
                         modifier = Modifier.fillMaxWidth(),
+                        visualTransformation = PasswordVisualTransformation(),
                         singleLine = true
                     )
+                    if (adminLoginError.isNotBlank()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = adminLoginError,
+                            color = Color(0xFFE94634),
+                            fontSize = 13.sp
+                        )
+                    }
                 }
             },
             confirmButton = {
-                TextButton(
+                Button(
                     onClick = {
+                        if (adminAccount.isBlank() || adminPwd.isBlank() || adminLogging) return@Button
                         scope.launch {
-                            adminChecking = true
-                            adminError = ""
+                            adminLogging = true
+                            adminLoginError = ""
                             val (ok, json) = ApiClient.post(
                                 "/api/admin-login",
-                                mapOf("username" to adminAccount, "password" to adminPassword)
+                                mapOf("username" to adminAccount, "password" to adminPwd)
                             )
-                            adminChecking = false
+                            adminLogging = false
                             if (ok) {
-                                AuthStore.saveAdmin(context, adminAccount, adminPassword)
+                                AuthStore.saveAdmin(context, adminAccount, adminPwd)
                                 showAdminLogin = false
-                                adminAccount = ""
-                                adminPassword = ""
+                                hasAdmin = true
                                 context.startActivity(Intent(context, AdminActivity::class.java))
                             } else {
-                                adminError = ApiClient.errorText(json)
+                                adminLoginError = ApiClient.errorText(json)
                             }
                         }
-                    }
-                ) { Text("登录") }
+                    },
+                    minHeight = 40.dp
+                ) {
+                    Text(if (adminLogging) "登录中…" else "登录并进入后台")
+                }
             },
             dismissButton = {
-                TextButton(onClick = { showAdminLogin = false }) { Text("取消") }
+                TextButton(
+                    onClick = { if (!adminLogging) showAdminLogin = false }
+                ) {
+                    Text("取消")
+                }
             }
         )
     }
+}
 
-    val hasAdmin = AuthStore.hasAdminSaved(context)
-
-    Scaffold(
-        modifier = Modifier.fillMaxSize(),
-        topBar = {
-            TopAppBar(
-                title = "life的群组",
-                subtitle = "当前用户：${ApiClient.currentUsername.ifBlank { "我" }}",
-                actions = {
-                    IconButton(
-                        onClick = {
-                            if (hasAdmin) {
-                                context.startActivity(Intent(context, AdminActivity::class.java))
-                            } else {
-                                showAdminLogin = true
-                            }
-                        },
-                        content = {
-                            Text(
-                                if (hasAdmin) "管理" else "管理员",
-                                fontSize = 14.sp
-                            )
-                        }
-                    )
-                    IconButton(
-                        onClick = {
-                            AuthStore.clear(context)
-                            context.startActivity(Intent(context, MainActivity::class.java))
-                            (context as? Activity)?.finishAffinity()
-                        },
-                        content = {
-                            Text("退出", fontSize = 14.sp)
-                        }
-                    )
-                }
-            )
-        }
-    ) { paddingValues ->
-        Column(
+@Composable
+fun InputBottomBar(
+    input: String,
+    onInputChange: (String) -> Unit,
+    muted: Boolean,
+    isSending: Boolean,
+    errorTip: String,
+    onErrorShown: () -> Unit,
+    onSend: (String) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .imePadding()
+            .navigationBarsPadding()
+    ) {
+        Card(
             modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-                .imePadding()
-                .padding(horizontal = 12.dp)
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp)
         ) {
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.weight(1f),
-                contentPadding = PaddingValues(vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                items(messages, key = { it.id }) { msg ->
-                    MessageBubble(msg)
+            if (muted) {
+                Box(
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        "当前全员禁言中",
+                        fontSize = 14.sp,
+                        color = Color(0xFFE94634)
+                    )
                 }
-            }
-
-            if (errorText.isNotBlank()) {
-                Text(
-                    text = errorText,
-                    color = Color(0xFFE94634),
-                    fontSize = 13.sp,
-                    modifier = Modifier.padding(vertical = 4.dp)
-                )
-            }
-
-            if (!isMuted) {
+            } else {
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 8.dp),
+                    modifier = Modifier.fillMaxWidth().padding(12.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     TextField(
                         value = input,
-                        onValueChange = { input = it },
-                        label = "说点什么…",
-                        modifier = Modifier.weight(1f),
+                        onValueChange = onInputChange,
+                        label = "输入消息…",
+                        modifier = Modifier.weight(1f).padding(end = 10.dp),
                         singleLine = false,
                         maxLines = 4
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
                     Button(
-                        onClick = {
-                            if (isSending || input.isBlank()) return@Button
-                            val text = input.trim()
-                            val now = java.text.SimpleDateFormat(
-                                "HH:mm",
-                                java.util.Locale.getDefault()
-                            ).format(java.util.Date())
-                            // 立即本地显示 pending 消息
-                            val pendingMsg = Msg(
-                                id = tempId--,
-                                username = ApiClient.currentUsername,
-                                content = text,
-                                time = "2026-01-01 $now",
-                                pending = true
-                            )
-                            messages = messages + pendingMsg
-                            input = ""
-                            scope.launch {
-                                listState.animateScrollToItem(messages.size - 1)
-                            }
-                            scope.launch {
-                                isSending = true
-                                errorText = ""
-                                val (ok, json) = ApiClient.post(
-                                    "/api/send",
-                                    mapOf("content" to text)
-                                )
-                                if (!ok) {
-                                    errorText = ApiClient.errorText(json)
-                                }
-                                // 移除本地 pending 消息，等轮询拉取正式消息
-                                messages = messages.filter { it.id != pendingMsg.id }
-                                isSending = false
-                            }
-                        },
+                        onClick = { onSend(input.trim()) },
                         modifier = Modifier.heightIn(min = 44.dp),
-                        minHeight = 44.dp,
-                        enabled = !isSending
+                        minHeight = 44.dp
                     ) {
-                        Text(if (isSending) "发送中" else "发送")
+                        Text("发送")
                     }
                 }
-            } else {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 8.dp)
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(Color(0xFFFFF3E0))
-                        .padding(12.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "全员禁言中，暂时无法发言",
-                        color = Color(0xFFFF6D00),
-                        fontSize = 14.sp
-                    )
-                }
+            }
+        }
+
+        if (errorTip.isNotBlank()) {
+            Text(
+                text = errorTip,
+                color = Color(0xFFE94634),
+                fontSize = 13.sp,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+            )
+            LaunchedEffect(errorTip) {
+                onErrorShown()
             }
         }
     }
@@ -329,49 +400,36 @@ fun MessageBubble(msg: Msg) {
                 .widthIn(max = 280.dp)
                 .clip(RoundedCornerShape(16.dp))
                 .background(
-                    when {
-                        msg.pending -> Color(0xFFB0B0B0)
-                        isMe -> MiuixTheme.colorScheme.primary
-                        else -> MiuixTheme.colorScheme.surfaceContainerHigh
-                    }
+                    if (msg.pending) Color(0xFFEAF2FF)
+                    else if (isMe) MiuixTheme.colorScheme.primary
+                    else MiuixTheme.colorScheme.surfaceContainerHigh
                 )
-                .padding(12.dp)
+                .padding(horizontal = 14.dp, vertical = 10.dp)
         ) {
             if (!isMe) {
                 Text(
                     text = msg.username,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
-                    color = MiuixTheme.colorScheme.primary
+                    color = if (msg.pending) MiuixTheme.colorScheme.primary else Color(0xFF3482FF)
                 )
                 Spacer(modifier = Modifier.height(2.dp))
             }
             Text(
-                text = msg.content,
+                text = msg.content + if (msg.pending) "（发送中…）" else "",
                 fontSize = 15.sp,
-                color = if (isMe || msg.pending) Color.White
-                else MiuixTheme.colorScheme.onSurface
+                color = if (isMe && !msg.pending) Color.White else MiuixTheme.colorScheme.onSurface,
+                lineHeight = 20.sp
             )
-            Spacer(modifier = Modifier.height(2.dp))
-            Text(
-                text = msg.time.substring(11, 16),
-                fontSize = 10.sp,
-                color = if (isMe || msg.pending) Color.White.copy(alpha = 0.75f)
-                else MiuixTheme.colorScheme.onSurfaceVariantSummary
-            )
+            if (msg.time.isNotBlank()) {
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = msg.time,
+                    fontSize = 10.sp,
+                    color = if (isMe && !msg.pending) Color.White.copy(alpha = 0.75f)
+                    else MiuixTheme.colorScheme.onSurfaceVariantSummary
+                )
+            }
         }
-    }
-}
-
-private fun parseMessages(json: JSONObject): List<Msg> {
-    val arr = json.optJSONArray("messages") ?: return emptyList()
-    return (0 until arr.length()).map { i ->
-        val obj = arr.getJSONObject(i)
-        Msg(
-            id = obj.optInt("id", 0),
-            username = obj.optString("username", "未知用户"),
-            content = obj.optString("content", ""),
-            time = obj.optString("created_at", "")
-        )
     }
 }

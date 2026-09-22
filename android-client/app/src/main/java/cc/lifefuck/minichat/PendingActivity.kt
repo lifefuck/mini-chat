@@ -2,8 +2,6 @@ package cc.lifefuck.minichat
 
 import android.content.Intent
 import android.os.Bundle
-import android.view.WindowManager
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.*
@@ -22,14 +20,9 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
  * 等待审核页面。
  */
 
-class PendingActivity : ComponentActivity() {
+class PendingActivity : BaseActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // 禁止截图和录屏
-        window.setFlags(
-            WindowManager.LayoutParams.FLAG_SECURE,
-            WindowManager.LayoutParams.FLAG_SECURE
-        )
         enableEdgeToEdge()
         setContent {
             MiuixTheme {
