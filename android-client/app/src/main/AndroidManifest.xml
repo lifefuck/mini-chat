@@ -28,7 +28,10 @@
             android:name=".ChatActivity"
             android:windowSoftInputMode="adjustResize" />
 
-        <activity android:name=".AdminActivity" />
+        <activity
+            android:name=".AdminActivity"
+            android:windowSoftInputMode="adjustResize" />
+
     </application>
 
 </manifest>

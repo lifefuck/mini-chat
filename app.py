@@ -377,10 +377,12 @@ def api_login():
         (qq,),
     ).fetchone()
 
-    if not row or not check_password_hash(row["password_hash"], password):
-        return jsonify({"ok": False, "error": "QQ 号或密码错误"})
+    if not row:
+        return jsonify({"ok": False, "error": "该 QQ 号未注册"})
     if row["role"] == "admin":
         return jsonify({"ok": False, "error": "请使用管理员登录入口"})
+    if not check_password_hash(row["password_hash"], password):
+        return jsonify({"ok": False, "error": "密码错误"})
 
     session["user_id"] = row["id"]
     return jsonify({"ok": True, "username": row["username"], "status": row["status"]})
@@ -396,8 +398,10 @@ def api_admin_login():
         "SELECT id, username, password_hash, role FROM users WHERE username = ? AND role = 'admin'",
         (username,),
     ).fetchone()
-    if not row or not check_password_hash(row["password_hash"], password):
-        return jsonify({"ok": False, "error": "管理员账号或密码错误"})
+    if not row:
+        return jsonify({"ok": False, "error": "管理员账号不存在"})
+    if not check_password_hash(row["password_hash"], password):
+        return jsonify({"ok": False, "error": "管理员密码错误"})
     session["user_id"] = row["id"]
     return jsonify({"ok": True})
 
@@ -415,8 +419,10 @@ def api_change_username():
     row = db.execute(
         "SELECT id, username, password_hash FROM users WHERE qq = ?", (qq,)
     ).fetchone()
-    if not row or not check_password_hash(row["password_hash"], password):
-        return jsonify({"ok": False, "error": "QQ 号或密码错误"})
+    if not row:
+        return jsonify({"ok": False, "error": "该 QQ 号未注册"})
+    if not check_password_hash(row["password_hash"], password):
+        return jsonify({"ok": False, "error": "密码错误"})
 
     existing = db.execute(
         "SELECT id FROM users WHERE username = ? AND id != ?", (new_username, row["id"])

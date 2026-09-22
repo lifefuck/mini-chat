@@ -1,189 +1,340 @@
 package cc.lifefuck.minichat
 
-import android.content.Intent
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
-import android.view.LayoutInflater
-import android.view.View
-import android.view.ViewGroup
-import android.widget.Button
-import android.widget.EditText
-import android.widget.Switch
-import android.widget.TextView
-import android.widget.Toast
-import androidx.appcompat.app.AlertDialog
-import androidx.appcompat.app.AppCompatActivity
-import androidx.recyclerview.widget.LinearLayoutManager
-import androidx.recyclerview.widget.RecyclerView
-import org.json.JSONArray
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import org.json.JSONObject
-import kotlin.concurrent.thread
+import top.yukonga.miuix.kmp.basic.Button
+import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.TextButton
+import top.yukonga.miuix.kmp.basic.TextField
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 /**
- * 管理员后台 Activity：用户管理 + 全员禁言开关。
+ * 管理员后台：审批/冻结/改名/重置密码/删除用户 + 全员禁言开关。
  */
-class AdminActivity : AppCompatActivity() {
-
-    private lateinit var recyclerUsers: RecyclerView
-    private lateinit var swMute: Switch
-    private val users = mutableListOf<User>()
-    private lateinit var adapter: UserAdapter
-    private val handler = Handler(Looper.getMainLooper())
-
+class AdminActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_admin)
-        title = "管理后台"
-
-        recyclerUsers = findViewById(R.id.recyclerUsers)
-        swMute = findViewById(R.id.swMute)
-
-        findViewById<Button>(R.id.btnLogout).setOnClickListener {
-            startActivity(Intent(this, MainActivity::class.java))
-            finish()
-        }
-
-        adapter = UserAdapter()
-        recyclerUsers.layoutManager = LinearLayoutManager(this)
-        recyclerUsers.adapter = adapter
-
-        swMute.setOnCheckedChangeListener { _, isChecked ->
-            thread {
-                val path = if (isChecked) "/api/admin/mute" else "/api/admin/unmute"
-                ApiClient.postSync(path, emptyMap())
+        enableEdgeToEdge()
+        setContent {
+            MiuixTheme {
+                AdminPage()
             }
         }
+    }
+}
 
-        loadUsers()
+data class UserItem(
+    val id: Int,
+    val qq: String,
+    val username: String,
+    val role: String,
+    val status: String,
+    val createdAt: String
+)
+
+@Composable
+fun AdminPage() {
+    val scope = rememberCoroutineScope()
+
+    var users by remember { mutableStateOf(listOf<UserItem>()) }
+    var muted by remember { mutableStateOf(false) }
+    var isLoading by remember { mutableStateOf(false) }
+    var toast by remember { mutableStateOf("") }
+
+    // 弹窗状态
+    var showRename by remember { mutableStateOf<Int?>(null) }
+    var renameValue by remember { mutableStateOf("") }
+    var showResetPwd by remember { mutableStateOf<Int?>(null) }
+    var resetPwdValue by remember { mutableStateOf("") }
+
+    // 拉取用户列表
+    suspend fun reload() {
+        isLoading = true
+        val (ok, json) = ApiClient.get("/api/admin/users")
+        if (ok) {
+            users = parseUsers(json)
+            muted = json.optBoolean("muted", false)
+        } else {
+            toast = ApiClient.errorText(json)
+        }
+        isLoading = false
     }
 
-    private fun loadUsers() {
-        thread {
-            val json = ApiClient.getSync("/api/admin/users") ?: JSONObject()
-            val arr = json.optJSONArray("users")
-            val muted = json.optBoolean("muted", false)
-            runOnUiThread {
-                swMute.isChecked = muted
-                if (arr != null) {
-                    users.clear()
-                    for (i in 0 until arr.length()) {
-                        val obj = arr.getJSONObject(i)
-                        users.add(
-                            User(
-                                id = obj.optInt("id"),
-                                qq = obj.optString("qq"),
-                                username = obj.optString("username"),
-                                role = obj.optString("role"),
-                                status = obj.optString("status")
+    LaunchedEffect(Unit) {
+        reload()
+    }
+
+    // 弹窗：改名
+    if (showRename != null) {
+        AlertDialog(
+            onDismissRequest = { showRename = null },
+            title = { Text("修改用户名") },
+            text = {
+                TextField(
+                    value = renameValue,
+                    onValueChange = { renameValue = it },
+                    label = "新用户名",
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        scope.launch {
+                            val uid = showRename ?: return@launch
+                            val (ok, json) = ApiClient.post(
+                                "/api/admin/change-username/$uid",
+                                mapOf("new_username" to renameValue)
                             )
-                        )
+                            toast = if (ok) "用户名已修改" else ApiClient.errorText(json)
+                            showRename = null
+                            renameValue = ""
+                            if (ok) reload()
+                        }
+                    },
+                    text = "确认"
+                )
+            },
+            dismissButton = {
+                TextButton(onClick = { showRename = null }, text = "取消")
+            }
+        )
+    }
+
+    // 弹窗：重置密码
+    if (showResetPwd != null) {
+        AlertDialog(
+            onDismissRequest = { showResetPwd = null },
+            title = { Text("重置密码") },
+            text = {
+                Column {
+                    Text("密码至少 6 位，新密码会直接生效。", fontSize = 13.sp, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    TextField(
+                        value = resetPwdValue,
+                        onValueChange = { resetPwdValue = it },
+                        label = "新密码",
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        scope.launch {
+                            val uid = showResetPwd ?: return@launch
+                            val (ok, json) = ApiClient.post(
+                                "/api/admin/reset-password/$uid",
+                                mapOf("new_password" to resetPwdValue)
+                            )
+                            toast = if (ok) "密码已重置" else ApiClient.errorText(json)
+                            showResetPwd = null
+                            resetPwdValue = ""
+                            if (ok) reload()
+                        }
+                    },
+                    text = "确认"
+                )
+            },
+            dismissButton = {
+                TextButton(onClick = { showResetPwd = null }, text = "取消")
+            }
+        )
+    }
+
+    Scaffold(
+        modifier = Modifier.fillMaxSize(),
+        topBar = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 48.dp, start = 16.dp, end = 16.dp, bottom = 8.dp)
+            ) {
+                Text(
+                    text = "管理后台",
+                    fontSize = 24.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MiuixTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = "管理员账号不能参与聊天",
+                    fontSize = 12.sp,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary
+                )
+            }
+        }
+    ) { paddingValues ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+                .padding(horizontal = 16.dp)
+        ) {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text("全员禁言", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                        Text("开启后普通用户无法发送消息", fontSize = 12.sp, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
                     }
-                    adapter.notifyDataSetChanged()
+                    Switch(
+                        checked = muted,
+                        onCheckedChange = { checked ->
+                            scope.launch {
+                                val path = if (checked) "/api/admin/mute" else "/api/admin/unmute"
+                                val (ok, json) = ApiClient.post(path, emptyMap())
+                                if (ok) {
+                                    muted = checked
+                                } else {
+                                    toast = ApiClient.errorText(json)
+                                }
+                            }
+                        }
+                    )
                 }
             }
-        }
-    }
 
-    private fun toast(msg: String) {
-        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
-    }
+            Spacer(modifier = Modifier.height(12.dp))
 
-    data class User(
-        val id: Int, val qq: String, val username: String,
-        val role: String, val status: String
-    )
-
-    inner class UserAdapter : RecyclerView.Adapter<UserAdapter.VH>() {
-
-        inner class VH(itemView: View) : RecyclerView.ViewHolder(itemView) {
-            val tvInfo: TextView = itemView.findViewById(R.id.tvUserInfo)
-            val tvStatus: TextView = itemView.findViewById(R.id.tvUserStatus)
-            val btnToggle: Button = itemView.findViewById(R.id.btnToggle)
-            val btnRename: Button = itemView.findViewById(R.id.btnRename)
-            val btnResetPwd: Button = itemView.findViewById(R.id.btnResetPwd)
-            val btnDelete: Button = itemView.findViewById(R.id.btnDelete)
-        }
-
-        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
-            val view = LayoutInflater.from(parent.context)
-                .inflate(R.layout.item_user, parent, false)
-            return VH(view)
-        }
-
-        override fun onBindViewHolder(holder: VH, position: Int) {
-            val user = users[position]
-            holder.tvInfo.text = "QQ: ${user.qq}\n用户名: ${user.username}"
-            holder.tvStatus.text = if (user.role == "admin") "管理员" else "状态: ${user.status}"
-
-            if (user.role == "admin") {
-                holder.btnToggle.visibility = View.GONE
-                holder.btnRename.visibility = View.GONE
-                holder.btnResetPwd.visibility = View.GONE
-                holder.btnDelete.visibility = View.GONE
-                return
-            }
-
-            holder.btnToggle.text = if (user.status == "approved") "冻结" else "通过"
-            holder.btnToggle.setOnClickListener {
-                val path = if (user.status == "approved") "/api/admin/reject/${user.id}" else "/api/admin/approve/${user.id}"
-                postAndRefresh(path)
-            }
-
-            holder.btnRename.setOnClickListener {
-                val edit = EditText(this@AdminActivity).apply { hint = "新用户名" }
-                AlertDialog.Builder(this@AdminActivity)
-                    .setTitle("修改用户名")
-                    .setView(edit)
-                    .setPositiveButton("确定") { _, _ ->
-                        val name = edit.text.toString().trim()
-                        postAndRefresh("/api/admin/change-username/${user.id}", mapOf("new_username" to name))
-                    }
-                    .setNegativeButton("取消", null)
-                    .show()
-            }
-
-            holder.btnResetPwd.setOnClickListener {
-                val edit = EditText(this@AdminActivity).apply {
-                    hint = "新密码"
-                    inputType = android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+            LazyColumn(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                items(users.filter { it.role != "admin" }, key = { it.id }) { user ->
+                    UserCard(
+                        user = user,
+                        onApprove = { scope.launch { ApiClient.post("/api/admin/approve/${user.id}", emptyMap()); reload() } },
+                        onReject = { scope.launch { ApiClient.post("/api/admin/reject/${user.id}", emptyMap()); reload() } },
+                        onDelete = { scope.launch { ApiClient.post("/api/admin/delete/${user.id}", emptyMap()); reload() } },
+                        onRename = {
+                            renameValue = user.username
+                            showRename = user.id
+                        },
+                        onResetPwd = {
+                            resetPwdValue = ""
+                            showResetPwd = user.id
+                        }
+                    )
                 }
-                AlertDialog.Builder(this@AdminActivity)
-                    .setTitle("重置密码")
-                    .setView(edit)
-                    .setPositiveButton("确定") { _, _ ->
-                        val pwd = edit.text.toString().trim()
-                        postAndRefresh("/api/admin/reset-password/${user.id}", mapOf("new_password" to pwd))
-                    }
-                    .setNegativeButton("取消", null)
-                    .show()
             }
 
-            holder.btnDelete.setOnClickListener {
-                AlertDialog.Builder(this@AdminActivity)
-                    .setTitle("删除账号")
-                    .setMessage("确定删除 ${user.username} 及其所有消息？")
-                    .setPositiveButton("删除") { _, _ ->
-                        postAndRefresh("/api/admin/delete/${user.id}")
-                    }
-                    .setNegativeButton("取消", null)
-                    .show()
+            if (toast.isNotBlank()) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = toast,
+                    color = if (toast.startsWith("已") || toast.startsWith("用户名") || toast.startsWith("密码"))
+                        Color(0xFF2E7D32) else Color(0xFFE94634),
+                    fontSize = 13.sp
+                )
+            }
+
+            Button(
+                onClick = { scope.launch { reload() } },
+                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                minHeight = 44.dp
+            ) {
+                Text(if (isLoading) "加载中…" else "刷新列表")
             }
         }
-
-        override fun getItemCount(): Int = users.size
     }
+}
 
-    private fun postAndRefresh(path: String, params: Map<String, String> = emptyMap()) {
-        thread {
-            val json = ApiClient.postSync(path, params)
-            runOnUiThread {
-                if (json?.optBoolean("ok", false) == true) {
-                    loadUsers()
+@Composable
+fun UserCard(
+    user: UserItem,
+    onApprove: () -> Unit,
+    onReject: () -> Unit,
+    onDelete: () -> Unit,
+    onRename: () -> Unit,
+    onResetPwd: () -> Unit
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (user.status == "approved") Color(0xFFE8F5E9) else Color(0xFFFFF3E0))
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                ) {
+                    Text(
+                        text = if (user.status == "approved") "已通过" else "待审核",
+                        fontSize = 11.sp,
+                        color = if (user.status == "approved") Color(0xFF2E7D32) else Color(0xFFFF6D00)
+                    )
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("${user.username}（QQ ${user.qq}）", fontSize = 15.sp, fontWeight = FontWeight.Bold)
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+            Text("注册时间：${user.createdAt}", fontSize = 12.sp, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+            Spacer(modifier = Modifier.height(10.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                if (user.status != "approved") {
+                    CompactAction("通过", onClick = onApprove, color = Color(0xFF2E7D32))
                 } else {
-                    toast(json?.optString("error", "操作失败") ?: "操作失败")
+                    CompactAction("冻结", onClick = onReject, color = Color(0xFFFF6D00))
                 }
+                CompactAction("改名", onClick = onRename, color = MiuixTheme.colorScheme.primary)
+                CompactAction("重置密码", onClick = onResetPwd, color = MiuixTheme.colorScheme.primary)
+                CompactAction("删除", onClick = onDelete, color = Color(0xFFE94634))
             }
         }
+    }
+}
+
+@Composable
+fun CompactAction(text: String, onClick: () -> Unit, color: Color) {
+    TextButton(
+        onClick = onClick,
+        modifier = Modifier.heightIn(min = 32.dp),
+        text = text
+    )
+}
+
+private fun parseUsers(json: JSONObject): List<UserItem> {
+    val arr = json.optJSONArray("users") ?: return emptyList()
+    return (0 until arr.length()).map { i ->
+        val obj = arr.getJSONObject(i)
+        UserItem(
+            id = obj.optInt("id", 0),
+            qq = obj.optString("qq", ""),
+            username = obj.optString("username", ""),
+            role = obj.optString("role", "user"),
+            status = obj.optString("status", "pending"),
+            createdAt = obj.optString("created_at", "")
+        )
     }
 }
