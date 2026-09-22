@@ -61,6 +61,8 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
@@ -69,6 +71,7 @@ import org.json.JSONObject
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -190,6 +193,13 @@ fun ChatPage() {
     var myRole by remember { mutableStateOf("") }
     var myQq by remember { mutableStateOf("") }
     var keyRegisterError by remember { mutableStateOf("") }
+
+    // 管理员登录弹窗
+    var showAdminLogin by remember { mutableStateOf(false) }
+    var adminAccount by remember { mutableStateOf("") }
+    var adminPassword by remember { mutableStateOf("") }
+    var adminPwdVisible by remember { mutableStateOf(false) }
+    var adminLogging by remember { mutableStateOf(false) }
 
     // 自己发送过的消息明文缓存，key 为消息 id。
     // 端到端加密中，发送者不会收到给自己的加密副本，
@@ -414,38 +424,19 @@ fun ChatPage() {
                     }
                 },
                 actions = {
-                    // 管理员入口
-                    // 管理员入口：当前已是管理员时直接进后台，
-                    // 否则弹出账号切换提示，确认后带着当前账号跳回登录页方便切换
+                    // 管理员入口：当前是管理员直接进入后台；否则弹窗登录管理员账号
                     IconButton(
                         onClick = {
                             if (myRole == "admin") {
                                 context.startActivity(Intent(context, AdminActivity::class.java))
                             } else {
-                                Toast.makeText(context, "当前不是管理员账号", Toast.LENGTH_SHORT).show()
+                                showAdminLogin = true
                             }
                         },
                         modifier = Modifier.widthIn(min = 48.dp)
                     ) {
                         Text(
-                            text = if (myRole == "admin") "后台" else "管理",
-                            fontSize = 13.sp,
-                            maxLines = 1,
-                            color = MiuixTheme.colorScheme.primary
-                        )
-                    }
-                    // 切换账号：保留当前账号并跳转登录页
-                    IconButton(
-                        onClick = {
-                            val intent = Intent(context, MainActivity::class.java)
-                            intent.putExtra("pre_fill_account", myQq)
-                            context.startActivity(intent)
-                            (context as? Activity)?.finishAffinity()
-                        },
-                        modifier = Modifier.widthIn(min = 48.dp)
-                    ) {
-                        Text(
-                            text = "切换",
+                            text = "后台",
                             fontSize = 13.sp,
                             maxLines = 1,
                             color = MiuixTheme.colorScheme.primary
@@ -600,6 +591,78 @@ fun ChatPage() {
         }
     }
 
+    // 管理员登录弹窗：在聊天页内直接弹窗登录管理员账号，不跳转整个登录页，避免触发自动登录。
+    // 成功后当前 session 切换为管理员（cookie jar 被覆盖），并在页面上更新 myRole。
+    if (showAdminLogin) {
+        AlertDialog(
+            onDismissRequest = { if (!adminLogging) showAdminLogin = false },
+            title = { Text("登录管理员") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    TextField(
+                        value = adminAccount,
+                        onValueChange = { adminAccount = it },
+                        label = "管理员账号",
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    TextField(
+                        value = adminPassword,
+                        onValueChange = { adminPassword = it },
+                        label = "管理员密码",
+                        singleLine = true,
+                        visualTransformation = if (adminPwdVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        adminLogging = true
+                        scope.launch {
+                            val (ok, json) = ApiClient.post(
+                                "/api/unified-login",
+                                mapOf("account" to adminAccount, "password" to adminPassword)
+                            )
+                            if (ok) {
+                                val role = json.optString("role", "")
+                                if (role == "admin") {
+                                    AuthStore.saveAdmin(context, adminAccount, adminPassword)
+                                    val (meOk, meJson) = ApiClient.get("/api/me")
+                                    if (meOk) {
+                                        val user = meJson.optJSONObject("user")
+                                        myUserId = user?.optInt("id") ?: 0
+                                        myUsername = user?.optString("username") ?: ""
+                                        myQq = user?.optString("qq") ?: ""
+                                        myRole = "admin"
+                                        myAvatar = user?.optString("avatar")?.takeIf { it.isNotBlank() }
+                                        ApiClient.currentUsername = myUsername
+                                    }
+                                    Toast.makeText(context, "已切换为管理员", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    Toast.makeText(context, "该账号不是管理员", Toast.LENGTH_SHORT).show()
+                                }
+                                showAdminLogin = false
+                            } else {
+                                Toast.makeText(context, ApiClient.errorText(json), Toast.LENGTH_LONG).show()
+                            }
+                            adminLogging = false
+                        }
+                    },
+                    enabled = adminAccount.isNotBlank() && adminPassword.isNotBlank() && !adminLogging
+                ) {
+                    Text(if (adminLogging) "登录中…" else "登录")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    text = "取消",
+                    onClick = { if (!adminLogging) showAdminLogin = false }
+                )
+            }
+        )
+    }
 }
 
 /**
