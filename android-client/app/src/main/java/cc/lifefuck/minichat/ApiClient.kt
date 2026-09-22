@@ -118,6 +118,20 @@ object ApiClient {
     }
 
     /**
+     * 上传本机 RSA 公钥到服务器，用于端到端加密。
+     */
+    suspend fun registerPublicKey(publicKey: String): Pair<Boolean, JSONObject> {
+        return post("/api/register-public-key", mapOf("public_key" to publicKey))
+    }
+
+    /**
+     * 获取所有已审核用户的公钥列表，用于发送加密群消息。
+     */
+    suspend fun fetchPublicKeys(): Pair<Boolean, JSONObject> {
+        return get("/api/public-keys")
+    }
+
+    /**
      * 健康检查：探测服务器是否在线。
      *
      * @return Pair(是否在线, 最后一次错误描述)，在线时错误描述为空

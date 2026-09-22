@@ -181,7 +181,8 @@ fun ChatPage() {
     var connectionError by remember { mutableStateOf("") }
     var lastToastTime by remember { mutableStateOf(0L) }
 
-    // 当前登录用户信息（昵称/头像）
+    // 当前登录用户信息（昵称/头像/userId）
+    var myUserId by remember { mutableStateOf(0) }
     var myUsername by remember { mutableStateOf(ApiClient.currentUsername) }
     var myAvatar by remember { mutableStateOf<String?>(null) }
 
@@ -199,6 +200,7 @@ fun ChatPage() {
         val (ok, json) = ApiClient.get("/api/me")
         if (ok) {
             val user = json.optJSONObject("user")
+            myUserId = user?.optInt("id") ?: 0
             val name = user?.optString("username") ?: ""
             if (name.isNotBlank()) {
                 myUsername = name
@@ -246,6 +248,20 @@ fun ChatPage() {
         }
     }
 
+    /**
+     * 解密服务器返回的消息 payload。
+     * 兼容旧版明文消息（没有 payload 时使用 content 字段）。
+     */
+    fun decryptMessage(o: org.json.JSONObject): String {
+        val payload = o.optString("payload").takeIf { it.isNotBlank() }
+        return if (payload != null && myUserId != 0) {
+            CryptoManager.decryptPayload(payload, myUserId)
+                ?: "[无法解密此消息]"
+        } else {
+            o.optString("content")
+        }
+    }
+
     // 加载历史消息
     suspend fun loadMessages(): Boolean {
         val (_, json) = ApiClient.get("/api/messages?last_id=0")
@@ -255,7 +271,7 @@ fun ChatPage() {
             Msg(
                 id = o.optInt("id"),
                 username = o.optString("username"),
-                content = o.optString("content"),
+                content = decryptMessage(o),
                 time = formatTime(o.optString("created_at", "")),
                 avatar = o.optString("avatar").takeIf { it.isNotBlank() }
             )
@@ -295,7 +311,7 @@ fun ChatPage() {
                 Msg(
                     id = o.optInt("id"),
                     username = o.optString("username"),
-                    content = o.optString("content"),
+                    content = decryptMessage(o),
                     time = formatTime(o.optString("created_at", "")),
                     avatar = o.optString("avatar").takeIf { it.isNotBlank() }
                 )
@@ -449,7 +465,46 @@ fun ChatPage() {
                         )
                         messages = messages + tempMsg
                         input = ""
-                        val (ok, json) = ApiClient.post("/api/send", mapOf("content" to text))
+
+                        // 端到端加密：获取所有接收者公钥后加密
+                        val payload = run {
+                            val (keysOk, keysJson) = ApiClient.fetchPublicKeys()
+                            if (!keysOk) {
+                                errorTip = ApiClient.errorText(keysJson)
+                                isSending = false
+                                messages = messages.filter { it.id != tempId }
+                                input = text
+                                return@launch
+                            }
+                            val keysArr = keysJson.optJSONArray("keys") ?: org.json.JSONArray()
+                            val recipients = mutableMapOf<Int, String>()
+                            for (i in 0 until keysArr.length()) {
+                                val item = keysArr.getJSONObject(i)
+                                val uid = item.optInt("id")
+                                val pub = item.optString("public_key").takeIf { it.isNotBlank() }
+                                if (uid != 0 && pub != null) recipients[uid] = pub
+                            }
+                            if (recipients.isEmpty()) {
+                                errorTip = "群成员公钥为空，无法加密发送"
+                                isSending = false
+                                messages = messages.filter { it.id != tempId }
+                                input = text
+                                return@launch
+                            }
+                            CryptoManager.encryptPayload(text, recipients)
+                                ?: run {
+                                    errorTip = "消息加密失败"
+                                    isSending = false
+                                    messages = messages.filter { it.id != tempId }
+                                    input = text
+                                    return@launch
+                                }
+                        }
+
+                        val (ok, json) = ApiClient.post(
+                            "/api/send",
+                            mapOf("payload" to payload)
+                        )
                         messages = messages.filter { it.id != tempId }
                         if (ok) {
                             val obj = json.optJSONObject("message")
@@ -457,7 +512,7 @@ fun ChatPage() {
                                 val newMsg = Msg(
                                     id = obj.optInt("id"),
                                     username = obj.optString("username"),
-                                    content = obj.optString("content"),
+                                    content = decryptMessage(obj),
                                     time = formatTime(obj.optString("created_at", "")),
                                     avatar = obj.optString("avatar").takeIf { it.isNotBlank() }
                                 )

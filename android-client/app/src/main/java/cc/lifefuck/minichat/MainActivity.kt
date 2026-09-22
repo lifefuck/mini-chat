@@ -76,9 +76,31 @@ fun MainPage() {
     }
 
     // 自动登录成功后关闭登录页，避免手动登录再弹一次
+    /**
+     * 处理登录成功后的页面跳转，并关闭登录页防止重复打开聊天页。
+     */
     fun jumpAndFinish(json: JSONObject) {
         handleLoginResult(context, json) { errorText = it }
         (context as? android.app.Activity)?.finish()
+    }
+
+    /**
+     * 登录/注册成功后，若服务器上还没有该用户的 RSA 公钥，
+     * 则生成本机密钥对并把公钥上传。这是端到端加密的前提。
+     */
+    suspend fun ensurePublicKeyRegistered(): String? {
+        val (ok, json) = ApiClient.get("/api/me")
+        if (!ok) return "无法获取用户信息"
+        val user = json.optJSONObject("user")
+        val hasKey = user?.optString("public_key")?.isNotBlank() == true
+        if (hasKey) return null
+
+        if (!CryptoManager.ensureKeyPair(context)) {
+            return "生成加密密钥失败"
+        }
+        val pub = CryptoManager.getPublicKeyBase64() ?: return "读取公钥失败"
+        val (regOk, regJson) = ApiClient.registerPublicKey(pub)
+        return if (regOk) null else ApiClient.errorText(regJson)
     }
 
     // 启动时检查 3 天内是否登录过，自动登录
@@ -95,6 +117,11 @@ fun MainPage() {
             autoLogging = false
             if (ok) {
                 AuthStore.save(context, saved.account, saved.password, json.optString("role", ""))
+                // 自动登录也要确保 RSA 公钥已上传
+                val keyErr = ensurePublicKeyRegistered()
+                if (keyErr != null) {
+                    showToast(keyErr)
+                }
                 jumpAndFinish(json)
             } else {
                 AuthStore.clear(context)
@@ -208,6 +235,11 @@ fun MainPage() {
                                                 )
                                                 if (ok) {
                                                     AuthStore.save(context, loginAccount, loginPwd, json.optString("role", ""))
+                                                    // 登录成功后确保 RSA 公钥已注册到服务器
+                                                    val keyErr = ensurePublicKeyRegistered()
+                                                    if (keyErr != null) {
+                                                        showToast(keyErr)
+                                                    }
                                                     handleLoginResult(context, json) { errorText = it }
                                                     loginAccount = ""
                                                     loginPwd = ""
