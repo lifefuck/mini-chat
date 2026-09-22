@@ -46,11 +46,12 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -59,7 +60,6 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
@@ -85,7 +85,8 @@ import java.util.Locale
  * - 顶部左侧显示当前用户头像（首字母/图片），点击头像可换头像；名字点击跳转修改昵称
  * - 每条消息气泡上显示发送者头像与名字
  * - 发送消息立即显示"发送中…"气泡，成功后立即插入后端返回的正式消息
- * - 顶部提供退出账号和管理员登录/进入后台入口
+ * - 管理员账号登录后也在此页面聊天，右上角可直接进入管理后台
+ * - 顶部提供退出账号和管理员进入后台入口
  */
 class ChatActivity : BaseActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -185,18 +186,26 @@ fun ChatPage() {
     var myUserId by remember { mutableStateOf(0) }
     var myUsername by remember { mutableStateOf(ApiClient.currentUsername) }
     var myAvatar by remember { mutableStateOf<String?>(null) }
+    var myRole by remember { mutableStateOf("") }
+    var myQq by remember { mutableStateOf("") }
 
-    // 管理员入口状态
-    var showAdminLogin by remember { mutableStateOf(false) }
-    var adminAccount by remember { mutableStateOf("") }
-    var adminPwd by remember { mutableStateOf("") }
-    var adminLogging by remember { mutableStateOf(false) }
-    var adminLoginError by remember { mutableStateOf("") }
-    var needsAdminRefresh by remember { mutableIntStateOf(0) }
-    val hasAdmin = remember(needsAdminRefresh) { AuthStore.getAdmin(context) != null }
+    // 自己发送过的消息明文缓存，key 为消息 id。
+    // 端到端加密中，发送者不会收到给自己的加密副本，
+    // 因此解密自己发的消息需要从本地缓存读取原文。
+    val ownPlainText = remember { mutableStateMapOf<Int, String>() }
 
     // 拉取当前用户信息
     LaunchedEffect(Unit) {
+        // 优先读取登录页传入的附加信息，再请求服务器确认
+        val activity = context as? Activity
+        myRole = activity?.intent?.getStringExtra("role") ?: ""
+        myQq = activity?.intent?.getStringExtra("qq") ?: ""
+        val intentName = activity?.intent?.getStringExtra("username")
+        if (!intentName.isNullOrBlank()) {
+            myUsername = intentName
+            ApiClient.currentUsername = intentName
+        }
+
         val (ok, json) = ApiClient.get("/api/me")
         if (ok) {
             val user = json.optJSONObject("user")
@@ -206,7 +215,15 @@ fun ChatPage() {
                 myUsername = name
                 ApiClient.currentUsername = name
             }
+            val qqServer = user?.optString("qq") ?: ""
+            if (qqServer.isNotBlank()) myQq = qqServer
+            val roleServer = user?.optString("role") ?: ""
+            if (roleServer.isNotBlank()) myRole = roleServer
             myAvatar = user?.optString("avatar")?.takeIf { it.isNotBlank() }
+            // 管理员登录后也必须有 RSA 公钥才能参与端到端加密
+            if (myRole == "admin") {
+                ensurePublicKeyRegistered(context)
+            }
         }
     }
 
@@ -251,15 +268,23 @@ fun ChatPage() {
     /**
      * 解密服务器返回的消息 payload。
      * 兼容旧版明文消息（没有 payload 时使用 content 字段）。
+     *
+     * 对于自己发送的消息，端到端加密 payload 里通常不会包含自己的加密副本，
+     * 因此优先从本地明文缓存 ownPlainText 读取；解密失败时尝试读取 content 字段。
      */
     fun decryptMessage(o: org.json.JSONObject): String {
-        val payload = o.optString("payload").takeIf { it.isNotBlank() }
-        return if (payload != null && myUserId != 0) {
-            CryptoManager.decryptPayload(payload, myUserId)
-                ?: "[无法解密此消息]"
-        } else {
-            o.optString("content")
+        val id = o.optInt("id")
+        val userId = o.optInt("user_id")
+        // 发送者本地缓存命中：直接显示原文
+        if (userId == myUserId && ownPlainText.containsKey(id)) {
+            return ownPlainText[id] ?: o.optString("content")
         }
+        val payload = o.optString("payload").takeIf { it.isNotBlank() }
+        if (payload != null && myUserId != 0) {
+            return CryptoManager.decryptPayload(payload, myUserId)
+                ?: (ownPlainText[id] ?: o.optString("content").ifBlank { "[无法解密此消息]" })
+        }
+        return o.optString("content")
     }
 
     // 加载历史消息
@@ -380,35 +405,20 @@ fun ChatPage() {
                 },
                 actions = {
                     // 管理员入口
+                    // 管理员入口：当前已是管理员时直接进后台，否则弹出管理员登录对话框
                     IconButton(
                         onClick = {
-                            val saved = AuthStore.getAdmin(context)
-                            if (saved != null) {
-                                scope.launch {
-                                    adminLogging = true
-                                    val (ok, _) = ApiClient.post(
-                                        "/api/admin-login",
-                                        mapOf("username" to saved.account, "password" to saved.password)
-                                    )
-                                    adminLogging = false
-                                    if (ok) {
-                                        context.startActivity(Intent(context, AdminActivity::class.java))
-                                    } else {
-                                        showAdminLogin = true
-                                        adminLoginError = "管理员凭证已过期，请重新登录"
-                                    }
-                                }
+                            if (myRole == "admin") {
+                                context.startActivity(Intent(context, AdminActivity::class.java))
                             } else {
-                                adminAccount = ""
-                                adminPwd = ""
-                                showAdminLogin = true
-                                adminLoginError = ""
+                                context.startActivity(Intent(context, MainActivity::class.java))
+                                (context as? Activity)?.finish()
                             }
                         },
                         modifier = Modifier.widthIn(min = 48.dp)
                     ) {
                         Text(
-                            text = if (hasAdmin) "后台" else "管理",
+                            text = if (myRole == "admin") "后台" else "管理",
                             fontSize = 13.sp,
                             maxLines = 1,
                             color = MiuixTheme.colorScheme.primary
@@ -509,10 +519,16 @@ fun ChatPage() {
                         if (ok) {
                             val obj = json.optJSONObject("message")
                             if (obj != null) {
+                                val msgId = obj.optInt("id")
+                                val sentContent = text
+                                // 保存自己发送的明文，确保当前会话内解密失败仍能显示原文
+                                if (msgId > 0) {
+                                    ownPlainText[msgId] = sentContent
+                                }
                                 val newMsg = Msg(
-                                    id = obj.optInt("id"),
+                                    id = msgId,
                                     username = obj.optString("username"),
-                                    content = decryptMessage(obj),
+                                    content = sentContent,
                                     time = formatTime(obj.optString("created_at", "")),
                                     avatar = obj.optString("avatar").takeIf { it.isNotBlank() }
                                 )
@@ -557,75 +573,6 @@ fun ChatPage() {
         }
     }
 
-    // 管理员登录弹窗
-    if (showAdminLogin) {
-        AlertDialog(
-            onDismissRequest = { if (!adminLogging) showAdminLogin = false },
-            title = { Text("登录管理员") },
-            text = {
-                Column {
-                    TextField(
-                        value = adminAccount,
-                        onValueChange = { adminAccount = it },
-                        label = "管理员账号",
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    TextField(
-                        value = adminPwd,
-                        onValueChange = { adminPwd = it },
-                        label = "密码",
-                        modifier = Modifier.fillMaxWidth(),
-                        visualTransformation = PasswordVisualTransformation(),
-                        singleLine = true
-                    )
-                    if (adminLoginError.isNotBlank()) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = adminLoginError,
-                            color = Color(0xFFE94634),
-                            fontSize = 13.sp
-                        )
-                    }
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        if (adminAccount.isBlank() || adminPwd.isBlank() || adminLogging) return@Button
-                        scope.launch {
-                            adminLogging = true
-                            adminLoginError = ""
-                            val (ok, json) = ApiClient.post(
-                                "/api/admin-login",
-                                mapOf("username" to adminAccount, "password" to adminPwd)
-                            )
-                            adminLogging = false
-                            if (ok) {
-                                AuthStore.saveAdmin(context, adminAccount, adminPwd)
-                                needsAdminRefresh += 1
-                                showAdminLogin = false
-                                context.startActivity(Intent(context, AdminActivity::class.java))
-                            } else {
-                                adminLoginError = ApiClient.errorText(json)
-                            }
-                        }
-                    },
-                    minHeight = 40.dp
-                ) {
-                    Text(if (adminLogging) "登录中…" else "登录并进入后台")
-                }
-            },
-            dismissButton = {
-                androidx.compose.material3.TextButton(
-                    onClick = { if (!adminLogging) showAdminLogin = false }
-                ) {
-                    Text("取消")
-                }
-            }
-        )
-    }
 }
 
 /**

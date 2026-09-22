@@ -1,5 +1,6 @@
 package cc.lifefuck.minichat
 
+import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
 import androidx.activity.compose.setContent
@@ -173,8 +174,22 @@ fun AdminPage() {
         topBar = {
             TopAppBar(
                 title = "管理后台",
-                subtitle = "管理员账号不能参与聊天",
+                subtitle = "管理员可返回聊天页",
                 actions = {
+                    IconButton(
+                        onClick = {
+                            context.startActivity(Intent(context, ChatActivity::class.java))
+                            (context as? Activity)?.finish()
+                        },
+                        modifier = Modifier.widthIn(min = 48.dp)
+                    ) {
+                        Text(
+                            text = "聊天",
+                            fontSize = 13.sp,
+                            maxLines = 1,
+                            color = MiuixTheme.colorScheme.primary
+                        )
+                    }
                     IconButton(
                         onClick = {
                             AuthStore.clear(context)

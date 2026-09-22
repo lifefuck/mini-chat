@@ -485,10 +485,12 @@ def api_unified_login():
         """
         SELECT id, username, qq, role, status, password_hash, avatar, public_key
         FROM users
-        WHERE (username = ? AND role = 'admin')
+        WHERE (qq = ? AND role = 'admin')
            OR (qq = ? AND role = 'user')
+           OR (username = ? AND role = 'admin')
+           OR (username = ? AND role = 'user')
         """,
-        (account, account),
+        (account, account, account, account),
     ).fetchone()
 
     if not row:

@@ -30,6 +30,25 @@ import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 /**
+ * 登录/注册成功后，若服务器上还没有该用户的 RSA 公钥，
+ * 则生成本机密钥对并把公钥上传。这是端到端加密的前提。
+ */
+suspend fun ensurePublicKeyRegistered(context: android.content.Context): String? {
+    val (ok, json) = ApiClient.get("/api/me")
+    if (!ok) return "无法获取用户信息"
+    val user = json.optJSONObject("user")
+    val hasKey = user?.optString("public_key")?.isNotBlank() == true
+    if (hasKey) return null
+
+    if (!CryptoManager.ensureKeyPair(context)) {
+        return "生成加密密钥失败"
+    }
+    val pub = CryptoManager.getPublicKeyBase64() ?: return "读取公钥失败"
+    val (regOk, regJson) = ApiClient.registerPublicKey(pub)
+    return if (regOk) null else ApiClient.errorText(regJson)
+}
+
+/**
  * 应用入口：登录 / 注册。
  *
  * 注册成功提示"成功注册，请联系管理员同意申请"；
@@ -84,25 +103,6 @@ fun MainPage() {
         (context as? android.app.Activity)?.finish()
     }
 
-    /**
-     * 登录/注册成功后，若服务器上还没有该用户的 RSA 公钥，
-     * 则生成本机密钥对并把公钥上传。这是端到端加密的前提。
-     */
-    suspend fun ensurePublicKeyRegistered(): String? {
-        val (ok, json) = ApiClient.get("/api/me")
-        if (!ok) return "无法获取用户信息"
-        val user = json.optJSONObject("user")
-        val hasKey = user?.optString("public_key")?.isNotBlank() == true
-        if (hasKey) return null
-
-        if (!CryptoManager.ensureKeyPair(context)) {
-            return "生成加密密钥失败"
-        }
-        val pub = CryptoManager.getPublicKeyBase64() ?: return "读取公钥失败"
-        val (regOk, regJson) = ApiClient.registerPublicKey(pub)
-        return if (regOk) null else ApiClient.errorText(regJson)
-    }
-
     // 启动时检查 3 天内是否登录过，自动登录
     LaunchedEffect(Unit) {
         val saved = AuthStore.get(context)
@@ -118,7 +118,7 @@ fun MainPage() {
             if (ok) {
                 AuthStore.save(context, saved.account, saved.password, json.optString("role", ""))
                 // 自动登录也要确保 RSA 公钥已上传
-                val keyErr = ensurePublicKeyRegistered()
+                val keyErr = ensurePublicKeyRegistered(context)
                 if (keyErr != null) {
                     showToast(keyErr)
                 }
@@ -236,7 +236,7 @@ fun MainPage() {
                                                 if (ok) {
                                                     AuthStore.save(context, loginAccount, loginPwd, json.optString("role", ""))
                                                     // 登录成功后确保 RSA 公钥已注册到服务器
-                                                    val keyErr = ensurePublicKeyRegistered()
+                                                    val keyErr = ensurePublicKeyRegistered(context)
                                                     if (keyErr != null) {
                                                         showToast(keyErr)
                                                     }
@@ -333,11 +333,18 @@ private fun handleLoginResult(context: android.content.Context, json: JSONObject
     val role = json.optString("role", "")
     val status = json.optString("status", "")
     val username = json.optString("username", "")
+    val qq = json.optString("qq", "")
     ApiClient.currentUsername = username
     when (role) {
-        "admin" -> context.startActivity(Intent(context, AdminActivity::class.java))
-        "user" -> when (status) {
-            "approved" -> context.startActivity(Intent(context, ChatActivity::class.java))
+        // 管理员和通过审核的普通用户都进入聊天页；管理员在聊天页右上角有后台入口
+        "admin", "user" -> when (status) {
+            "approved" -> {
+                val intent = Intent(context, ChatActivity::class.java)
+                intent.putExtra("role", role)
+                intent.putExtra("qq", qq)
+                intent.putExtra("username", username)
+                context.startActivity(intent)
+            }
             "pending" -> context.startActivity(Intent(context, PendingActivity::class.java))
             else -> onError("账号状态异常")
         }
