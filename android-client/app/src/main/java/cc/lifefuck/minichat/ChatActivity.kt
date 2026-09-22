@@ -46,6 +46,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -183,11 +184,12 @@ fun ChatPage() {
     var lastToastTime by remember { mutableStateOf(0L) }
 
     // 当前登录用户信息（昵称/头像/userId）
-    var myUserId by remember { mutableStateOf(0) }
+    var myUserId by remember { mutableIntStateOf(0) }
     var myUsername by remember { mutableStateOf(ApiClient.currentUsername) }
     var myAvatar by remember { mutableStateOf<String?>(null) }
     var myRole by remember { mutableStateOf("") }
     var myQq by remember { mutableStateOf("") }
+    var keyRegisterError by remember { mutableStateOf("") }
 
     // 自己发送过的消息明文缓存，key 为消息 id。
     // 端到端加密中，发送者不会收到给自己的加密副本，
@@ -220,9 +222,11 @@ fun ChatPage() {
             val roleServer = user?.optString("role") ?: ""
             if (roleServer.isNotBlank()) myRole = roleServer
             myAvatar = user?.optString("avatar")?.takeIf { it.isNotBlank() }
-            // 管理员登录后也必须有 RSA 公钥才能参与端到端加密
-            if (myRole == "admin") {
-                ensurePublicKeyRegistered(context)
+            // 任何账号登录后都必须有 RSA 公钥才能收发端到端加密消息（包括管理员）
+            val keyErr = ensurePublicKeyRegistered(context)
+            if (keyErr != null) {
+                keyRegisterError = keyErr
+                Toast.makeText(context, "公钥未上传：$keyErr", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -405,20 +409,37 @@ fun ChatPage() {
                 },
                 actions = {
                     // 管理员入口
-                    // 管理员入口：当前已是管理员时直接进后台，否则弹出管理员登录对话框
+                    // 管理员入口：当前已是管理员时直接进后台，
+                    // 否则弹出账号切换提示，确认后带着当前账号跳回登录页方便切换
                     IconButton(
                         onClick = {
                             if (myRole == "admin") {
                                 context.startActivity(Intent(context, AdminActivity::class.java))
                             } else {
-                                context.startActivity(Intent(context, MainActivity::class.java))
-                                (context as? Activity)?.finish()
+                                Toast.makeText(context, "当前不是管理员账号", Toast.LENGTH_SHORT).show()
                             }
                         },
                         modifier = Modifier.widthIn(min = 48.dp)
                     ) {
                         Text(
                             text = if (myRole == "admin") "后台" else "管理",
+                            fontSize = 13.sp,
+                            maxLines = 1,
+                            color = MiuixTheme.colorScheme.primary
+                        )
+                    }
+                    // 切换账号：保留当前账号并跳转登录页
+                    IconButton(
+                        onClick = {
+                            val intent = Intent(context, MainActivity::class.java)
+                            intent.putExtra("pre_fill_account", myQq)
+                            context.startActivity(intent)
+                            (context as? Activity)?.finishAffinity()
+                        },
+                        modifier = Modifier.widthIn(min = 48.dp)
+                    ) {
+                        Text(
+                            text = "切换",
                             fontSize = 13.sp,
                             maxLines = 1,
                             color = MiuixTheme.colorScheme.primary

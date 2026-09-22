@@ -1,5 +1,6 @@
 package cc.lifefuck.minichat
 
+import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
 import android.widget.Toast
@@ -34,18 +35,17 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
  * 则生成本机密钥对并把公钥上传。这是端到端加密的前提。
  */
 suspend fun ensurePublicKeyRegistered(context: android.content.Context): String? {
-    val (ok, json) = ApiClient.get("/api/me")
-    if (!ok) return "无法获取用户信息"
-    val user = json.optJSONObject("user")
-    val hasKey = user?.optString("public_key")?.isNotBlank() == true
-    if (hasKey) return null
+    val (ok, json) = ApiClient.get("/api/me/public-key")
+    if (!ok) return "无法获取公钥状态：${ApiClient.errorText(json)}"
+    val existingKey = json.optString("public_key", "")
+    if (existingKey.isNotBlank()) return null
 
     if (!CryptoManager.ensureKeyPair(context)) {
         return "生成加密密钥失败"
     }
     val pub = CryptoManager.getPublicKeyBase64() ?: return "读取公钥失败"
     val (regOk, regJson) = ApiClient.registerPublicKey(pub)
-    return if (regOk) null else ApiClient.errorText(regJson)
+    return if (regOk) null else "公钥上传失败：${ApiClient.errorText(regJson)}"
 }
 
 /**
@@ -80,8 +80,12 @@ fun MainPage() {
     var isLoading by remember { mutableStateOf(false) }
     var autoLogging by remember { mutableStateOf(false) }
 
-    // 登录字段
-    var loginAccount by remember { mutableStateOf("") }
+    // 登录字段（支持从其他页面回传账号自动预填）
+    var loginAccount by remember {
+        mutableStateOf(
+            (context as? Activity)?.intent?.getStringExtra("pre_fill_account") ?: ""
+        )
+    }
     var loginPwd by remember { mutableStateOf("") }
 
     // 注册字段
@@ -124,8 +128,12 @@ fun MainPage() {
                 }
                 jumpAndFinish(json)
             } else {
+                // 自动登录失败时仅清除账号，保留输入框账号以便用户手动登录
                 AuthStore.clear(context)
+                loginAccount = saved.account
+                loginPwd = saved.password
                 errorText = ApiClient.errorText(json)
+                showToast(errorText)
             }
         }
     }

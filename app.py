@@ -784,14 +784,28 @@ def api_public_key(user_id):
     return jsonify({"ok": True, "public_key": row["public_key"]})
 
 
+@app.route("/api/me/public-key", methods=["GET"])
+@login_required
+def api_me_public_key():
+    """获取当前登录用户的 RSA 公钥，用于判断是否需要重新上传/补传。"""
+    db = get_db()
+    row = db.execute(
+        "SELECT public_key FROM users WHERE id = ?", (session["user_id"],)
+    ).fetchone()
+    return jsonify({
+        "ok": True,
+        "public_key": row["public_key"] if row else ""
+    })
+
+
 @app.route("/api/public-keys", methods=["GET"])
 @login_required
 def api_public_keys():
-    """获取所有已审核用户的公钥列表。"""
+    """获取所有已审核/内置用户的公钥列表（包含管理员，因为管理员也要参与群聊）。"""
     db = get_db()
     rows = db.execute(
         """SELECT id, username, public_key FROM users
-           WHERE status = 'approved' AND role = 'user'
+           WHERE status = 'approved'
              AND public_key IS NOT NULL AND public_key != ''"""
     ).fetchall()
     return jsonify({
