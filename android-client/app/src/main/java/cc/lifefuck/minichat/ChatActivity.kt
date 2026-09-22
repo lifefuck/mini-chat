@@ -346,8 +346,14 @@ fun ChatPage() {
                 )
             }
             if (new.isNotEmpty()) {
-                messages = messages + new
-                lastId = new.maxOf { it.id }
+                // 合并新消息时按 id 去重，保留本地已有的明文缓存版本
+                val existing = messages.associateBy { it.id }
+                val merged = new.map { existing[it.id] ?: it }
+                val result = (messages + merged.filter { it.id !in existing.keys })
+                    .sortedBy { it.id }
+                    .distinctBy { it.id }
+                messages = result
+                lastId = result.maxOfOrNull { it.id } ?: lastId
             }
             muted = json.optBoolean("muted", false)
         }
