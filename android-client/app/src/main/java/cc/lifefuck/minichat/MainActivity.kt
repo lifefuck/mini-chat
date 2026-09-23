@@ -433,7 +433,9 @@ private fun handleLoginResult(context: android.content.Context, json: JSONObject
     val status = json.optString("status", "")
     val username = json.optString("username", "")
     val qq = json.optString("qq", "")
+    val userId = json.optInt("id", 0)
     ApiClient.currentUsername = username
+    ApiClient.currentUserId = userId
     when (role) {
         "admin" -> {
             // 管理员账号只能进入管理后台，不参与群聊
@@ -445,6 +447,7 @@ private fun handleLoginResult(context: android.content.Context, json: JSONObject
                 intent.putExtra("role", role)
                 intent.putExtra("qq", qq)
                 intent.putExtra("username", username)
+                intent.putExtra("user_id", userId)
                 context.startActivity(intent)
             }
             "pending" -> context.startActivity(Intent(context, PendingActivity::class.java))

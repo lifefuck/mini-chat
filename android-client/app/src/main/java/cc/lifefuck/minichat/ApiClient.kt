@@ -46,9 +46,11 @@ object ApiClient {
         .writeTimeout(15, TimeUnit.SECONDS)
         .build()
 
-    // 内存缓存当前用户名，避免反复请求 /api/me
+    // 内存缓存当前用户名与用户 ID，避免反复请求 /api/me
     @Volatile
     var currentUsername: String = ""
+    @Volatile
+    var currentUserId: Int = 0
 
     /**
      * 发送 POST 表单请求，返回解析后的 JSON。
@@ -208,5 +210,6 @@ object ApiClient {
     fun clearCookies() {
         cookieManager.cookieStore.removeAll()
         currentUsername = ""
+        currentUserId = 0
     }
 }

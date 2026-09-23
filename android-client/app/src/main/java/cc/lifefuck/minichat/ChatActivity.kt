@@ -190,7 +190,9 @@ fun ChatPage() {
     var lastToastTime by remember { mutableStateOf(0L) }
 
     // 当前登录用户信息（昵称/头像/userId）
-    var myUserId by remember { mutableIntStateOf(0) }
+    val activity = LocalContext.current as? Activity
+    val initialUserId = activity?.intent?.getIntExtra("user_id", 0)?.takeIf { it != 0 } ?: ApiClient.currentUserId
+    var myUserId by remember { mutableIntStateOf(initialUserId) }
     var myUsername by remember { mutableStateOf(ApiClient.currentUsername) }
     var myAvatar by remember { mutableStateOf<String?>(null) }
     var myRole by remember { mutableStateOf("") }
@@ -305,6 +307,9 @@ fun ChatPage() {
             if (decrypted != null) return decrypted
         }
         // 无法解密：判断是否为旧消息（发送时对方没自己的公钥）还是密钥丢失
+        if (myUserId == 0) {
+            return "[身份信息未加载，请检查网络或重新登录]"
+        }
         return when {
             userId == myUserId -> o.optString("content").ifBlank { "[无法解密：自己发送的消息，但本地密钥已丢失或应用被重装]" }
             payload.isNullOrBlank() -> o.optString("content").ifBlank { "[无法解密此消息]" }

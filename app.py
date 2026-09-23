@@ -505,6 +505,7 @@ def api_unified_login():
     app.permanent_session_lifetime = timedelta(days=3)
     return jsonify({
         "ok": True,
+        "id": row["id"],
         "username": row["username"],
         "role": row["role"],
         "status": row["status"],
