@@ -344,8 +344,11 @@ private fun handleLoginResult(context: android.content.Context, json: JSONObject
     val qq = json.optString("qq", "")
     ApiClient.currentUsername = username
     when (role) {
-        // 管理员和通过审核的普通用户都进入聊天页；管理员在聊天页右上角有后台入口
-        "admin", "user" -> when (status) {
+        "admin" -> {
+            // 管理员账号只能进入管理后台，不参与群聊
+            context.startActivity(Intent(context, AdminActivity::class.java))
+        }
+        "user" -> when (status) {
             "approved" -> {
                 val intent = Intent(context, ChatActivity::class.java)
                 intent.putExtra("role", role)

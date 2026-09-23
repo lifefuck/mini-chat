@@ -176,10 +176,31 @@ fun AdminPage() {
                 title = "管理后台",
                 subtitle = "管理员可返回聊天页",
                 actions = {
+                    // 返回聊天页：如果保存了普通用户主账号，自动重新登录后返回；否则退到登录页
                     IconButton(
                         onClick = {
-                            context.startActivity(Intent(context, ChatActivity::class.java))
-                            (context as? Activity)?.finish()
+                            scope.launch {
+                                val saved = AuthStore.get(context)
+                                if (saved != null && saved.role == "user") {
+                                    val (ok, _) = ApiClient.post(
+                                        "/api/unified-login",
+                                        mapOf("account" to saved.account, "password" to saved.password)
+                                    )
+                                    if (ok) {
+                                        context.startActivity(Intent(context, ChatActivity::class.java))
+                                        (context as? Activity)?.finish()
+                                    } else {
+                                        toast = "返回聊天页失败，请重新登录"
+                                        AuthStore.clear(context)
+                                        context.startActivity(Intent(context, MainActivity::class.java))
+                                        (context as? Activity)?.finishAffinity()
+                                    }
+                                } else {
+                                    // 没有普通用户主账号，退到登录页
+                                    context.startActivity(Intent(context, MainActivity::class.java))
+                                    (context as? Activity)?.finishAffinity()
+                                }
+                            }
                         },
                         modifier = Modifier.widthIn(min = 48.dp)
                     ) {

@@ -435,14 +435,11 @@ fun ChatPage() {
                     }
                 },
                 actions = {
-                    // 管理员入口：当前是管理员直接进入后台；否则弹窗登录管理员账号
+                    // 后台入口：在普通用户聊天页内登录管理员子账号，成功后进入管理后台。
+                    // 管理员账号本身不进入聊天页，因此这里始终按子账号模式处理。
                     IconButton(
                         onClick = {
-                            if (myRole == "admin") {
-                                context.startActivity(Intent(context, AdminActivity::class.java))
-                            } else {
-                                showAdminLogin = true
-                            }
+                            showAdminLogin = true
                         },
                         modifier = Modifier.widthIn(min = 48.dp)
                     ) {
@@ -649,21 +646,14 @@ fun ChatPage() {
                                 val role = json.optString("role", "")
                                 if (role == "admin") {
                                     AuthStore.saveAdmin(context, adminAccount, adminPassword)
-                                    val (meOk, meJson) = ApiClient.get("/api/me")
-                                    if (meOk) {
-                                        val user = meJson.optJSONObject("user")
-                                        myUserId = user?.optInt("id") ?: 0
-                                        myUsername = user?.optString("username") ?: ""
-                                        myQq = user?.optString("qq") ?: ""
-                                        myRole = "admin"
-                                        myAvatar = user?.optString("avatar")?.takeIf { it.isNotBlank() }
-                                        ApiClient.currentUsername = myUsername
-                                    }
                                     Toast.makeText(context, "已切换为管理员", Toast.LENGTH_SHORT).show()
+                                    showAdminLogin = false
+                                    // 管理员子账号登录成功后直接进入管理后台
+                                    context.startActivity(Intent(context, AdminActivity::class.java))
                                 } else {
                                     Toast.makeText(context, "该账号不是管理员", Toast.LENGTH_SHORT).show()
+                                    showAdminLogin = false
                                 }
-                                showAdminLogin = false
                             } else {
                                 Toast.makeText(context, ApiClient.errorText(json), Toast.LENGTH_LONG).show()
                             }
