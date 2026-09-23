@@ -108,13 +108,25 @@ object ApiClient {
      * 构造一个携带 HTTP 状态码和响应原文摘要的错误 JSON。
      */
     private fun errJson(code: Int, text: String): JSONObject {
-        val snippet = text.trim().take(120).replace("\n", " ")
-        val msg = if (snippet.isBlank()) {
-            "服务器返回错误（HTTP $code）"
-        } else {
-            "服务器返回错误（HTTP $code）：$snippet"
+        val snippet = text.trim().take(200).replace("\n", " ")
+        val msg = when (code) {
+            403 -> "请求被拦截（HTTP 403）"
+            429 -> "请求过于频繁（HTTP 429）"
+            500, 502, 503, 504 -> "服务器暂不可用（HTTP $code）"
+            else -> "服务器返回错误（HTTP $code）"
         }
-        return JSONObject().put("error", msg)
+        val detail = if (snippet.isBlank()) msg else "$msg：$snippet"
+        return JSONObject()
+            .put("error", detail)
+            .put("http_code", code)
+    }
+
+    /**
+     * 判断最近一次错误是否为 Cloudflare/网关层面的拦截（403/429/5xx）。
+     */
+    fun isGatewayError(json: JSONObject?): Boolean {
+        val code = json?.optInt("http_code", 0) ?: 0
+        return code in listOf(403, 429, 500, 502, 503, 504)
     }
 
     /**

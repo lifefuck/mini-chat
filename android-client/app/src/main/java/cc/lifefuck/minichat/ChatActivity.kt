@@ -197,6 +197,12 @@ fun ChatPage() {
     var myQq by remember { mutableStateOf("") }
     var keyRegisterError by remember { mutableStateOf("") }
 
+    // 公钥缺失提示：发送前发现部分群成员没有公钥时，展示其用户名并询问是否继续
+    var showMissingKeyDialog by remember { mutableStateOf(false) }
+    var missingKeyUsers by remember { mutableStateOf(listOf<String>()) }
+    var pendingSendPayload by remember { mutableStateOf<String?>(null) }
+    var pendingSendText by remember { mutableStateOf("") }
+
     // 管理员登录弹窗
     var showAdminLogin by remember { mutableStateOf(false) }
     var adminAccount by remember { mutableStateOf("") }
@@ -304,7 +310,12 @@ fun ChatPage() {
             val decrypted = CryptoManager.decryptPayload(payload, myUserId)
             if (decrypted != null) return decrypted
         }
-        return o.optString("content").ifBlank { "[无法解密此消息]" }
+        // 无法解密：判断是否为旧消息（发送时对方没自己的公钥）还是密钥丢失
+        return when {
+            userId == myUserId -> o.optString("content").ifBlank { "[无法解密：自己发送的消息，但本地密钥已丢失或应用被重装]" }
+            payload.isNullOrBlank() -> o.optString("content").ifBlank { "[无法解密此消息]" }
+            else -> "[无法解密：发送时你尚未上传公钥，或对方发送时你未在线]"
+        }
     }
 
     // 加载历史消息
@@ -337,7 +348,7 @@ fun ChatPage() {
 
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    // 轻量心跳：每 10 秒独立探测一次服务器，作为断网状态的兜底更新
+    // 轻量心跳：每 20 秒独立探测一次服务器，作为断网状态的兜底更新
     LaunchedEffect(Unit) {
         lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
             while (true) {
@@ -351,7 +362,7 @@ fun ChatPage() {
                         lastToastTime = now
                     }
                 }
-                delay(10000)
+                delay(20000)
             }
         }
     }
@@ -361,7 +372,7 @@ fun ChatPage() {
         lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
             loadMessages()
             while (true) {
-                delay(1500)
+                delay(3000)
                 try {
                     val (_, json) = ApiClient.get("/api/messages?last_id=$lastId")
                     isOnline = true
@@ -538,7 +549,7 @@ fun ChatPage() {
                         input = ""
 
                         // 端到端加密：获取所有接收者公钥后加密
-                        val payload = run {
+                        val (payload, missingUsers) = run {
                             val (keysOk, keysJson) = ApiClient.fetchPublicKeys()
                             if (!keysOk) {
                                 errorTip = ApiClient.errorText(keysJson)
@@ -549,11 +560,17 @@ fun ChatPage() {
                             }
                             val keysArr = keysJson.optJSONArray("keys") ?: org.json.JSONArray()
                             val recipients = mutableMapOf<Int, String>()
+                            val missing = mutableListOf<String>()
                             for (i in 0 until keysArr.length()) {
                                 val item = keysArr.getJSONObject(i)
                                 val uid = item.optInt("id")
+                                val name = item.optString("username").takeIf { it.isNotBlank() } ?: "用户$uid"
                                 val pub = item.optString("public_key").takeIf { it.isNotBlank() }
-                                if (uid != 0 && pub != null) recipients[uid] = pub
+                                if (uid != 0 && pub != null) {
+                                    recipients[uid] = pub
+                                } else if (uid != 0) {
+                                    missing.add(name)
+                                }
                             }
                             if (recipients.isEmpty()) {
                                 errorTip = "群成员公钥为空，无法加密发送"
@@ -562,7 +579,9 @@ fun ChatPage() {
                                 input = text
                                 return@launch
                             }
-                            CryptoManager.encryptPayload(text, recipients)
+                            // 发送者自己不需要被加密，靠本地明文缓存显示；从缺失列表中排除自己
+                            val missingWithoutSelf = missing.filter { it != myUsername }
+                            val encrypted = CryptoManager.encryptPayload(text, recipients)
                                 ?: run {
                                     errorTip = "消息加密失败"
                                     isSending = false
@@ -570,6 +589,19 @@ fun ChatPage() {
                                     input = text
                                     return@launch
                                 }
+                            encrypted to missingWithoutSelf
+                        }
+
+                        // 发现部分成员无公钥：暂停发送，弹窗让用户决定是否继续
+                        if (missingUsers.isNotEmpty()) {
+                            pendingSendPayload = payload
+                            pendingSendText = text
+                            missingKeyUsers = missingUsers
+                            showMissingKeyDialog = true
+                            isSending = false
+                            messages = messages.filter { it.id != tempId }
+                            input = text
+                            return@launch
                         }
 
                         val (ok, json) = ApiClient.post(
@@ -641,6 +673,95 @@ fun ChatPage() {
                 }
             }
         }
+    }
+
+    // 公钥缺失确认弹窗
+    if (showMissingKeyDialog) {
+        AlertDialog(
+            onDismissRequest = { showMissingKeyDialog = false },
+            title = { Text("部分成员可能无法解密") },
+            text = {
+                Text("以下用户尚未上传公钥，发送后对方将显示无法解密：\n\n${missingKeyUsers.joinToString("\n")}")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showMissingKeyDialog = false
+                        val payloadToSend = pendingSendPayload
+                        val textToSend = pendingSendText
+                        pendingSendPayload = null
+                        pendingSendText = ""
+                        if (payloadToSend != null && textToSend.isNotBlank()) {
+                            isSending = true
+                            scope.launch {
+                                val tempId2 = -(System.currentTimeMillis() % 100000).toInt()
+                                val tempMsg2 = Msg(
+                                    id = tempId2,
+                                    username = myUsername,
+                                    content = textToSend,
+                                    time = formatTime(""),
+                                    pending = true,
+                                    avatar = myAvatar
+                                )
+                                messages = messages + tempMsg2
+                                val (ok, json) = ApiClient.post(
+                                    "/api/send",
+                                    mapOf("payload" to payloadToSend)
+                                )
+                                messages = messages.filter { it.id != tempId2 }
+                                if (ok) {
+                                    val obj = json.optJSONObject("message")
+                                    if (obj != null) {
+                                        val msgId = obj.optInt("id")
+                                        if (msgId > 0) {
+                                            ownPlainText[msgId] = textToSend
+                                            scope.launch {
+                                                localDb.insertOrReplace(
+                                                    msgId,
+                                                    obj.optString("username"),
+                                                    textToSend,
+                                                    formatTime(obj.optString("created_at", "")),
+                                                    obj.optString("avatar").takeIf { it.isNotBlank() }
+                                                )
+                                            }
+                                        }
+                                        val newMsg = Msg(
+                                            id = msgId,
+                                            username = obj.optString("username"),
+                                            content = textToSend,
+                                            time = formatTime(obj.optString("created_at", "")),
+                                            avatar = obj.optString("avatar").takeIf { it.isNotBlank() }
+                                        )
+                                        if (newMsg.id > lastId) {
+                                            messages = messages + newMsg
+                                            lastId = newMsg.id
+                                        }
+                                    }
+                                } else {
+                                    errorTip = ApiClient.errorText(json)
+                                    input = textToSend
+                                }
+                                isSending = false
+                            }
+                        }
+                    }
+                ) {
+                    Text("继续发送")
+                }
+            },
+            dismissButton = {
+            TextButton(
+            text = "取消",
+            onClick = {
+                val originalInput = pendingSendText
+                showMissingKeyDialog = false
+                pendingSendPayload = null
+                pendingSendText = ""
+                input = originalInput
+            }
+            )
+            }
+        )
     }
 
     // 管理员登录弹窗：在聊天页内直接弹窗登录管理员账号，不跳转整个登录页，避免触发自动登录。
