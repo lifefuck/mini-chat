@@ -17,7 +17,23 @@ import java.util.concurrent.TimeUnit
  */
 object ApiClient {
     // 默认服务器地址，用户要求硬编码，不手动输入
-    private const val BASE_URL = "https://mini-chat.wxlost.com"
+    // 默认服务器地址；应用启动时会被 MainActivity 读取的用户自定义地址覆盖
+    const val DEFAULT_SERVER_URL = "https://mini-chat.wxlost.com"
+    private var BASE_URL = DEFAULT_SERVER_URL
+
+    /**
+     * 动态切换 API 服务器地址。
+     *
+     * @param url 完整的 https:// 地址，末尾不带斜杠
+     */
+    fun setBaseUrl(url: String) {
+        BASE_URL = url.trim().trimEnd('/')
+    }
+
+    /**
+     * 获取当前 API 服务器地址。
+     */
+    fun getBaseUrl(): String = BASE_URL
 
     private val cookieManager = CookieManager().apply {
         setCookiePolicy(CookiePolicy.ACCEPT_ALL)

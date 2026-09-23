@@ -15,6 +15,7 @@ import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.animation.Crossfade
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -29,17 +30,40 @@ import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import android.content.Context
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.preferencesDataStore
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+
+// 用户自定义服务器地址 DataStore
+private val Context.serverDataStore by preferencesDataStore(name = "server")
+private val SERVER_URL_KEY = stringPreferencesKey("base_url")
 
 /**
- * 登录/注册成功后，若服务器上还没有该用户的 RSA 公钥，
- * 则生成本机密钥对并把公钥上传。这是端到端加密的前提。
+ * 读取用户设置的服务器地址，为空则返回默认地址。
+ */
+fun Context.getCustomServer(): String? = runBlocking {
+    serverDataStore.data.first()[SERVER_URL_KEY]?.takeIf { it.isNotBlank() }
+}
+
+/**
+ * 保存用户自定义服务器地址。
+ */
+suspend fun Context.setCustomServer(url: String) {
+    serverDataStore.edit { it[SERVER_URL_KEY] = url.trim().trimEnd('/') }
+}
+
+/**
+ * 登录/注册成功后强制刷新本机 RSA 公钥到服务器。
+ *
+ * 同一账号在换设备、重装或清理应用数据后，Android Keystore 会生成新的 RSA 密钥对，
+ * 服务端若仍保留旧公钥，发送端会使用旧公钥加密，接收端用新私钥永远解不了密。
+ * 因此每次登录成功后都无条件将本机当前公钥覆盖上传到服务器，
+ * 让发送者始终使用接收者当前设备的最新公钥加密。
  */
 suspend fun ensurePublicKeyRegistered(context: android.content.Context): String? {
-    val (ok, json) = ApiClient.get("/api/me/public-key")
-    if (!ok) return "无法获取公钥状态：${ApiClient.errorText(json)}"
-    val existingKey = json.optString("public_key", "")
-    if (existingKey.isNotBlank()) return null
-
     if (!CryptoManager.ensureKeyPair(context)) {
         return "生成加密密钥失败"
     }
@@ -79,6 +103,9 @@ fun MainPage() {
     var errorText by remember { mutableStateOf("") }
     var isLoading by remember { mutableStateOf(false) }
     var autoLogging by remember { mutableStateOf(false) }
+    // 服务器节点切换弹窗
+    var showServerDialog by remember { mutableStateOf(false) }
+    var customServerInput by remember { mutableStateOf("") }
 
     // 登录字段（支持从其他页面回传账号自动预填）
     var loginAccount by remember {
@@ -138,25 +165,40 @@ fun MainPage() {
         }
     }
 
+    // 启动时读取用户自定义服务器地址
+    LaunchedEffect(Unit) {
+        val customUrl = context.getCustomServer()
+        if (!customUrl.isNullOrBlank()) {
+            ApiClient.setBaseUrl(customUrl)
+        }
+    }
+
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         topBar = {
-            Column(
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = 48.dp, bottom = 8.dp)
                     .padding(horizontal = 16.dp)
             ) {
-                Text(
-                    text = "life的群组",
-                    fontSize = 28.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MiuixTheme.colorScheme.onSurface
-                )
-                Text(
-                    text = "mini-chat 文字群聊",
-                    fontSize = 13.sp,
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary
+                Column(modifier = Modifier.align(Alignment.CenterStart)) {
+                    Text(
+                        text = "life的群组",
+                        fontSize = 28.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MiuixTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = "mini-chat 文字群聊",
+                        fontSize = 13.sp,
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary
+                    )
+                }
+                top.yukonga.miuix.kmp.basic.TextButton(
+                    modifier = Modifier.align(Alignment.CenterEnd),
+                    text = "节点",
+                    onClick = { showServerDialog = true }
                 )
             }
         }
@@ -327,13 +369,62 @@ fun MainPage() {
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "登录预计 5~10 秒，晚上属于高峰时段，消息发送较慢属于正常现象。",
+                        text = "登录预计 5~10 秒，晚上属于高峰时段，消息发送较慢属于正常现象。\n当前节点：${ApiClient.getBaseUrl()}",
                         fontSize = 13.sp,
                         color = MiuixTheme.colorScheme.onSurfaceVariantSummary
                     )
                 }
             }
         }
+    }
+
+    // 服务器节点切换弹窗：默认使用 https://mini-chat.wxlost.com，用户可改成自己的大陆/香港节点
+    if (showServerDialog) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showServerDialog = false },
+            title = { Text("切换服务器节点") },
+            text = {
+                Column {
+                    Text(
+                        "默认节点：${ApiClient.DEFAULT_SERVER_URL}\n留空则恢复默认。",
+                        fontSize = 13.sp,
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    TextField(
+                        value = customServerInput,
+                        onValueChange = { customServerInput = it },
+                        label = "自定义节点地址（https://...）",
+                        singleLine = true
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    scope.launch {
+                        val url = customServerInput.trim().takeIf { it.isNotBlank() }
+                        if (url == null) {
+                            context.serverDataStore.edit { it.remove(SERVER_URL_KEY) }
+                            ApiClient.setBaseUrl(ApiClient.DEFAULT_SERVER_URL)
+                            showToast("已恢复默认节点")
+                        } else {
+                            context.setCustomServer(url)
+                            ApiClient.setBaseUrl(url)
+                            showToast("已切换到 $url")
+                        }
+                        showServerDialog = false
+                    }
+                }) {
+                    Text("保存")
+                }
+            },
+            dismissButton = {
+                top.yukonga.miuix.kmp.basic.TextButton(
+                    text = "取消",
+                    onClick = { showServerDialog = false }
+                )
+            }
+        )
     }
 }
 
