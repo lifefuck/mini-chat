@@ -891,9 +891,9 @@ fun MessageItem(msg: Msg) {
             modifier = Modifier.widthIn(max = 260.dp),
             horizontalAlignment = if (isMe) Alignment.End else Alignment.Start
         ) {
-            // 发送者名字与消息ID，便于定位解密问题
+            // 发送者名字
             Text(
-                text = "${msg.username} · #${msg.id}",
+                text = msg.username,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Bold,
                 color = if (msg.pending) MiuixTheme.colorScheme.primary else Color(0xFF3482FF),

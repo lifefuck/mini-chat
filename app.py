@@ -637,13 +637,6 @@ def get_group_aes_key():
     return key
 
 
-@app.route("/api/group-key", methods=["GET"])
-@approved_required
-def api_group_key():
-    """已审核用户拉取群共享 AES 加密密钥。"""
-    return jsonify({"ok": True, "key": get_group_aes_key()})
-
-
 @app.route("/api/send", methods=["POST"])
 @approved_required
 def api_send():
