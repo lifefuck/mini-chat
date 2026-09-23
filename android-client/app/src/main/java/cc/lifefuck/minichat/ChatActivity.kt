@@ -52,6 +52,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -330,53 +333,59 @@ fun ChatPage() {
         return true
     }
 
-    // 前台每秒检测服务器状态
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    // 前台时每秒检测服务器状态；切后台自动暂停
     LaunchedEffect(Unit) {
-        while (true) {
-            val (online, err) = ApiClient.checkHealth()
-            isOnline = online
-            connectionError = if (online) "" else err
-            if (!online) {
-                val now = System.currentTimeMillis()
-                if (now - lastToastTime > 3000) {
-                    Toast.makeText(context, "未连接到服务器", Toast.LENGTH_SHORT).show()
-                    lastToastTime = now
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                val (online, err) = ApiClient.checkHealth()
+                isOnline = online
+                connectionError = if (online) "" else err
+                if (!online) {
+                    val now = System.currentTimeMillis()
+                    if (now - lastToastTime > 3000) {
+                        Toast.makeText(context, "未连接到服务器", Toast.LENGTH_SHORT).show()
+                        lastToastTime = now
+                    }
                 }
+                delay(1000)
             }
-            delay(1000)
         }
     }
 
-    // 轮询新消息
+    // 前台时轮询新消息；切后台自动暂停，回到前台再恢复
     LaunchedEffect(Unit) {
-        loadMessages()
-        while (true) {
-            delay(1500)
-            val (_, json) = ApiClient.get("/api/messages?last_id=$lastId")
-            val arr = json.optJSONArray("messages") ?: continue
-            val new = (0 until arr.length()).map { i ->
-                val o = arr.getJSONObject(i)
-                Msg(
-                    id = o.optInt("id"),
-                    username = o.optString("username"),
-                    content = decryptMessage(o),
-                    time = formatTime(o.optString("created_at", "")),
-                    avatar = o.optString("avatar").takeIf { it.isNotBlank() }
-                )
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            loadMessages()
+            while (true) {
+                delay(1500)
+                val (_, json) = ApiClient.get("/api/messages?last_id=$lastId")
+                val arr = json.optJSONArray("messages") ?: continue
+                val new = (0 until arr.length()).map { i ->
+                    val o = arr.getJSONObject(i)
+                    Msg(
+                        id = o.optInt("id"),
+                        username = o.optString("username"),
+                        content = decryptMessage(o),
+                        time = formatTime(o.optString("created_at", "")),
+                        avatar = o.optString("avatar").takeIf { it.isNotBlank() }
+                    )
+                }
+                if (new.isNotEmpty()) {
+                    // 合并新消息时按 id 去重，保留本地已有的明文缓存版本
+                    val existing = messages.associateBy { it.id }
+                    val merged = new.map { existing[it.id] ?: it }
+                    val result = (messages + merged.filter { it.id !in existing.keys })
+                        .sortedBy { it.id }
+                        .distinctBy { it.id }
+                    messages = result
+                    lastId = result.maxOfOrNull { it.id } ?: lastId
+                    // 把新消息明文写进本地数据库，退出重进后可恢复
+                    localDb.saveAll(new)
+                }
+                muted = json.optBoolean("muted", false)
             }
-            if (new.isNotEmpty()) {
-                // 合并新消息时按 id 去重，保留本地已有的明文缓存版本
-                val existing = messages.associateBy { it.id }
-                val merged = new.map { existing[it.id] ?: it }
-                val result = (messages + merged.filter { it.id !in existing.keys })
-                    .sortedBy { it.id }
-                    .distinctBy { it.id }
-                messages = result
-                lastId = result.maxOfOrNull { it.id } ?: lastId
-                // 把新消息明文写进本地数据库，退出重进后可恢复
-                localDb.saveAll(new)
-            }
-            muted = json.optBoolean("muted", false)
         }
     }
 
