@@ -201,9 +201,10 @@ fun ChatPage() {
     var adminPwdVisible by remember { mutableStateOf(false) }
     var adminLogging by remember { mutableStateOf(false) }
 
-    // 自己发送过的消息明文缓存，key 为消息 id。
-    // 端到端加密中，发送者不会收到给自己的加密副本，
-    // 因此解密自己发的消息需要从本地缓存读取原文。
+    // 本地聊天记录数据库：明文只存手机，退出重进后恢复。
+    val localDb = remember { LocalMessageDb(context) }
+
+    // 自己发送过的消息明文缓存（仅当前会话快速查找），key 为消息 id。
     val ownPlainText = remember { mutableStateMapOf<Int, String>() }
 
     // 拉取当前用户信息
@@ -280,25 +281,27 @@ fun ChatPage() {
     }
 
     /**
-     * 解密服务器返回的消息 payload。
-     * 兼容旧版明文消息（没有 payload 时使用 content 字段）。
+     * 解密服务器返回的消息 payload，并读取本地明文缓存兜底。
      *
      * 对于自己发送的消息，端到端加密 payload 里通常不会包含自己的加密副本，
-     * 因此优先从本地明文缓存 ownPlainText 读取；解密失败时尝试读取 content 字段。
+     * 因此优先从本地数据库/当前会话缓存读取原文；解密失败时再尝试旧版 content 字段。
      */
     fun decryptMessage(o: org.json.JSONObject): String {
         val id = o.optInt("id")
         val userId = o.optInt("user_id")
-        // 发送者本地缓存命中：直接显示原文
+        // 本地数据库优先命中：退出重进后也能直接显示明文
+        val localContent = if (id > 0) localDb.loadAll().find { it.id == id }?.content else null
+        if (!localContent.isNullOrBlank()) return localContent
+        // 发送者当前会话缓存命中
         if (userId == myUserId && ownPlainText.containsKey(id)) {
             return ownPlainText[id] ?: o.optString("content")
         }
         val payload = o.optString("payload").takeIf { it.isNotBlank() }
         if (payload != null && myUserId != 0) {
-            return CryptoManager.decryptPayload(payload, myUserId)
-                ?: (ownPlainText[id] ?: o.optString("content").ifBlank { "[无法解密此消息]" })
+            val decrypted = CryptoManager.decryptPayload(payload, myUserId)
+            if (decrypted != null) return decrypted
         }
-        return o.optString("content")
+        return o.optString("content").ifBlank { "[无法解密此消息]" }
     }
 
     // 加载历史消息
@@ -315,8 +318,14 @@ fun ChatPage() {
                 avatar = o.optString("avatar").takeIf { it.isNotBlank() }
             )
         }
-        messages = loaded
-        lastId = loaded.maxOfOrNull { it.id } ?: 0
+        // 先恢复本地明文记录作为基础，再用服务端记录合并/补全
+        val localMessages = localDb.loadAll()
+        val combinedById = (localMessages + loaded).associateBy { it.id }
+        val allMessages = combinedById.values.sortedBy { it.id }
+        messages = allMessages
+        lastId = allMessages.maxOfOrNull { it.id } ?: 0
+        // 把服务端能解密出来的消息持久化到本地
+        localDb.saveAll(loaded)
         muted = json.optBoolean("muted", false)
         return true
     }
@@ -364,6 +373,8 @@ fun ChatPage() {
                     .distinctBy { it.id }
                 messages = result
                 lastId = result.maxOfOrNull { it.id } ?: lastId
+                // 把新消息明文写进本地数据库，退出重进后可恢复
+                localDb.saveAll(new)
             }
             muted = json.optBoolean("muted", false)
         }
@@ -446,6 +457,8 @@ fun ChatPage() {
                     IconButton(
                         onClick = {
                             AuthStore.clear(context)
+                            // 用户主动退出时是否清除本地聊天记录？
+                            // 目前保留本地记录，仅清空登录态； uninstall 时系统自动删除本地 db。
                             context.startActivity(Intent(context, MainActivity::class.java))
                             (context as? Activity)?.finishAffinity()
                         },
@@ -539,9 +552,16 @@ fun ChatPage() {
                             if (obj != null) {
                                 val msgId = obj.optInt("id")
                                 val sentContent = text
-                                // 保存自己发送的明文，确保当前会话内解密失败仍能显示原文
+                                // 保存自己发送的明文到本地数据库，退出重进后仍可恢复
                                 if (msgId > 0) {
                                     ownPlainText[msgId] = sentContent
+                                    localDb.insertOrReplace(
+                                        msgId,
+                                        obj.optString("username"),
+                                        sentContent,
+                                        formatTime(obj.optString("created_at", "")),
+                                        obj.optString("avatar").takeIf { it.isNotBlank() }
+                                    )
                                 }
                                 val newMsg = Msg(
                                     id = msgId,
