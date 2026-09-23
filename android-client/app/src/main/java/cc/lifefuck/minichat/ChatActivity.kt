@@ -128,18 +128,17 @@ data class Msg(
 
 /** 格式化时间为 HH:mm 显示。
  *
- * 服务端返回的是本地时区字符串（如 2026-09-23 22:00:10），
- * 直接截取 HH:mm 即可；不做 Date 解析，避免时区二次转换导致错位。
+ * 服务端返回的 created_at 形如 2026-09-23 22:00:10（本地时区），
+ * 直接截取 HH:mm；若长度不足，回退到当前时间。
  */
 private fun formatTime(timeStr: String): String {
-    if (timeStr.length >= 16) {
-        return timeStr.substring(11, 16)
-    }
-    // 非标准格式则回退到当前时间
-    return try {
-        java.time.LocalTime.now().toString().substring(0, 5)
-    } catch (_: Exception) {
-        ""
+    return when {
+        timeStr.length >= 16 -> timeStr.substring(11, 16)
+        timeStr.length >= 5 -> timeStr.substring(0, 5)
+        else -> {
+            val sdf = java.text.SimpleDateFormat("HH:mm", Locale.getDefault())
+            sdf.format(java.util.Date())
+        }
     }
 }
 
@@ -316,20 +315,20 @@ fun ChatPage() {
         }
         // 无法解密时给出具体调试信息，方便定位问题
         return try {
-        val payloadObj = payload?.let { org.json.JSONObject(it) }
-        val keyIds = payloadObj?.optJSONObject("keys")?.keys()?.asSequence()?.toList() ?: emptyList()
-        val debug = "myUid=$myUserId keys=[${keyIds.joinToString(",")}]"
-        when {
-            myUserId == 0 -> "[UID未加载，请重新登录]"
-            userId == myUserId -> "[自己消息：$debug]"
-            payloadObj == null -> "[payload 为空]"
-            !keyIds.contains(myUserId.toString()) -> "[keys 中缺少当前用户：$debug]"
-            else -> "[RSA/AES 解密失败：$debug]"
-        }
+            val payloadObj = payload?.let { org.json.JSONObject(it) }
+            val keyIds = payloadObj?.optJSONObject("keys")?.keys()?.asSequence()?.toList() ?: emptyList()
+            val debug = "myUid=$myUserId keys=[${keyIds.joinToString(",")}]"
+            when {
+                myUserId == 0 -> "[UID未加载，请重新登录]"
+                userId == myUserId -> "[自己消息：$debug]"
+                payloadObj == null -> "[payload 为空]"
+                !keyIds.contains(myUserId.toString()) -> "[keys 中缺少当前用户：$debug]"
+                else -> "[RSA/AES 解密失败：$debug]"
+            }
         } catch (_: Exception) {
-        "[无法解密：payload 解析失败]"
+            "[无法解密：payload 解析失败]"
         }
-        }
+    }
 
     // 加载历史消息
     suspend fun loadMessages(): Boolean {

@@ -35,27 +35,32 @@ object CryptoManager {
     private const val GCM_TAG_SIZE = 128  // bit
 
     /**
-     * 确保本机 RSA 密钥对存在，不存在则生成。
-     * 私钥永远不会离开 Android Keystore。
+     * 强制重新生成本机 RSA 密钥对，确保私钥和当前上传的公钥严格匹配。
+     *
+     * 同一账号在换设备、重装、清数据或应用被恢复后，Android Keystore 中的旧私钥
+     * 可能与服务端保存的公钥不再对应，导致无法解密。因此每次登录都重建密钥对，
+     * 再把新公钥上传到服务器覆盖旧记录。
      *
      * @return 是否成功
      */
     fun ensureKeyPair(context: Context): Boolean {
         return try {
             val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-            if (!keyStore.containsAlias(KEY_ALIAS)) {
-                val generator = java.security.KeyPairGenerator.getInstance("RSA", ANDROID_KEYSTORE)
-                val spec = KeyGenParameterSpec.Builder(
-                    KEY_ALIAS,
-                    KeyProperties.PURPOSE_DECRYPT or KeyProperties.PURPOSE_ENCRYPT
-                )
-                    .setKeySize(2048)
-                    .setDigests(KeyProperties.DIGEST_SHA256, KeyProperties.DIGEST_SHA512)
-                    .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_RSA_OAEP)
-                    .build()
-                generator.initialize(spec)
-                generator.generateKeyPair()
+            // 先删除已有别名，确保新生成的公私钥配对
+            if (keyStore.containsAlias(KEY_ALIAS)) {
+                keyStore.deleteEntry(KEY_ALIAS)
             }
+            val generator = java.security.KeyPairGenerator.getInstance("RSA", ANDROID_KEYSTORE)
+            val spec = KeyGenParameterSpec.Builder(
+                KEY_ALIAS,
+                KeyProperties.PURPOSE_DECRYPT or KeyProperties.PURPOSE_ENCRYPT
+            )
+                .setKeySize(2048)
+                .setDigests(KeyProperties.DIGEST_SHA256, KeyProperties.DIGEST_SHA512)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_RSA_OAEP)
+                .build()
+            generator.initialize(spec)
+            generator.generateKeyPair()
             true
         } catch (e: Exception) {
             e.printStackTrace()
