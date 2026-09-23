@@ -70,6 +70,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.Card
@@ -317,7 +318,12 @@ fun ChatPage() {
         return try {
             val payloadObj = payload?.let { org.json.JSONObject(it) }
             val keyIds = payloadObj?.optJSONObject("keys")?.keys()?.asSequence()?.toList() ?: emptyList()
-            val debug = "myUid=$myUserId keys=[${keyIds.joinToString(",")}]"
+            val serverPub = runBlocking {
+                val (ok, json) = ApiClient.get("/api/me/public-key")
+                if (ok) json.optString("public_key", "").take(12) else "ERR"
+            }
+            val localPub = CryptoManager.getPublicKeyBase64()?.take(12) ?: "NULL"
+            val debug = "myUid=$myUserId keys=[${keyIds.joinToString(",")}] serv=$serverPub local=$localPub"
             when {
                 myUserId == 0 -> "[UID未加载，请重新登录]"
                 userId == myUserId -> "[自己消息：$debug]"
@@ -505,6 +511,20 @@ fun ChatPage() {
                             maxLines = 1,
                             color = MiuixTheme.colorScheme.primary
                         )
+                    }
+                    IconButton(
+                        onClick = {
+                            scope.launch {
+                                val (ok, json) = ApiClient.get("/api/me/public-key")
+                                val serverPub = if (ok) json.optString("public_key", "") else ""
+                                val localPub = CryptoManager.getPublicKeyBase64() ?: ""
+                                val serverHash = serverPub.take(20)
+                                val localHash = localPub.take(20)
+                                Toast.makeText(context, "SERV=${serverHash} LOCAL=${localHash}", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    ) {
+                        Text("🔑", fontSize = 13.sp)
                     }
                     // 退出账号
                     IconButton(
@@ -924,9 +944,9 @@ fun MessageItem(msg: Msg) {
             modifier = Modifier.widthIn(max = 260.dp),
             horizontalAlignment = if (isMe) Alignment.End else Alignment.Start
         ) {
-            // 发送者名字
+            // 发送者名字与消息ID，便于定位解密问题
             Text(
-                text = msg.username,
+                text = "${msg.username} · #${msg.id}",
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Bold,
                 color = if (msg.pending) MiuixTheme.colorScheme.primary else Color(0xFF3482FF),

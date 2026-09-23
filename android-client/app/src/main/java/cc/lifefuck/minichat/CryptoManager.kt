@@ -37,6 +37,8 @@ object CryptoManager {
     /**
      * 强制重新生成本机 RSA 密钥对，确保私钥和当前上传的公钥严格匹配。
      *
+     * 同时把生成后的公钥摘要写入日志，便于和服务端比对。
+     *
      * 同一账号在换设备、重装、清数据或应用被恢复后，Android Keystore 中的旧私钥
      * 可能与服务端保存的公钥不再对应，导致无法解密。因此每次登录都重建密钥对，
      * 再把新公钥上传到服务器覆盖旧记录。
@@ -60,10 +62,13 @@ object CryptoManager {
                 .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_RSA_OAEP)
                 .build()
             generator.initialize(spec)
-            generator.generateKeyPair()
+            val pair = generator.generateKeyPair()
+            val pubBase64 = pair.public?.encoded?.toBase64() ?: ""
+            val pubHash = pubBase64.let { java.security.MessageDigest.getInstance("SHA-256").digest(it.toByteArray()).take(8).joinToString("") { b -> "%02x".format(b) } }
+            android.util.Log.i("CryptoManager", "generateKeyPair done; pub-len=${pubBase64.length} pub-hash=$pubHash")
             true
         } catch (e: Exception) {
-            e.printStackTrace()
+            android.util.Log.e("CryptoManager", "generateKeyPair error", e)
             false
         }
     }
@@ -75,9 +80,11 @@ object CryptoManager {
         return try {
             val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
             val cert = keyStore.getCertificate(KEY_ALIAS)
-            cert?.publicKey?.encoded?.toBase64()
+            val pub = cert?.publicKey?.encoded?.toBase64()
+            android.util.Log.i("CryptoManager", "getPublicKey alias-exists=${cert != null} pub-len=${pub?.length}")
+            pub
         } catch (e: Exception) {
-            e.printStackTrace()
+            android.util.Log.e("CryptoManager", "getPublicKey error", e)
             null
         }
     }
@@ -151,10 +158,15 @@ object CryptoManager {
 
             // 1. RSA 解密 AES 密钥
             val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-            val privateKey = keyStore.getKey(KEY_ALIAS, null) as java.security.PrivateKey
+            val privateKey = keyStore.getKey(KEY_ALIAS, null) as? java.security.PrivateKey
+            if (privateKey == null) {
+                android.util.Log.e("CryptoManager", "decryptPayload: privateKey is null")
+                return null
+            }
             val rsaCipher = Cipher.getInstance(RSA_TRANSFORM)
             rsaCipher.init(Cipher.DECRYPT_MODE, privateKey)
             val aesKey = rsaCipher.doFinal(encryptedAesKey)
+            android.util.Log.i("CryptoManager", "decryptPayload RSA ok myUid=$myUserId aesKey-len=${aesKey.size}")
 
             // 2. AES-GCM 解密正文
             val aesCipher = Cipher.getInstance(AES_TRANSFORM)
@@ -166,7 +178,7 @@ object CryptoManager {
             val plain = aesCipher.doFinal(cipherBytes)
             String(plain, StandardCharsets.UTF_8)
         } catch (e: Exception) {
-            e.printStackTrace()
+            android.util.Log.e("CryptoManager", "decryptPayload error myUid=$myUserId", e)
             null
         }
     }
