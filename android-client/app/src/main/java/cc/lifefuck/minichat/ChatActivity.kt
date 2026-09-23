@@ -126,13 +126,21 @@ data class Msg(
     val avatar: String? = null
 )
 
-/** 格式化时间为 HH:mm 显示。 */
+/** 格式化时间为 HH:mm 显示。
+ *
+ * 服务端返回的是本地时区字符串（如 2026-09-23 22:00:10），
+ * 直接截取 HH:mm 即可；不做 Date 解析，避免时区二次转换导致错位。
+ */
 private fun formatTime(timeStr: String): String {
     if (timeStr.length >= 16) {
         return timeStr.substring(11, 16)
     }
-    val sdf = SimpleDateFormat("HH:mm", Locale.getDefault())
-    return sdf.format(Date())
+    // 非标准格式则回退到当前时间
+    return try {
+        java.time.LocalTime.now().toString().substring(0, 5)
+    } catch (_: Exception) {
+        ""
+    }
 }
 
 /** 裁剪字符串为首字符：英文取第一个字母，中文取第一个汉字。 */
@@ -306,16 +314,22 @@ fun ChatPage() {
             val decrypted = CryptoManager.decryptPayload(payload, myUserId)
             if (decrypted != null) return decrypted
         }
-        // 无法解密：判断是否为旧消息（发送时对方没自己的公钥）还是密钥丢失
-        if (myUserId == 0) {
-            return "[身份信息未加载，请检查网络或重新登录]"
+        // 无法解密时给出具体调试信息，方便定位问题
+        return try {
+        val payloadObj = payload?.let { org.json.JSONObject(it) }
+        val keyIds = payloadObj?.optJSONObject("keys")?.keys()?.asSequence()?.toList() ?: emptyList()
+        val debug = "myUid=$myUserId keys=[${keyIds.joinToString(",")}]"
+        when {
+            myUserId == 0 -> "[UID未加载，请重新登录]"
+            userId == myUserId -> "[自己消息：$debug]"
+            payloadObj == null -> "[payload 为空]"
+            !keyIds.contains(myUserId.toString()) -> "[keys 中缺少当前用户：$debug]"
+            else -> "[RSA/AES 解密失败：$debug]"
         }
-        return when {
-            userId == myUserId -> o.optString("content").ifBlank { "[无法解密：自己发送的消息，但本地密钥已丢失或应用被重装]" }
-            payload.isNullOrBlank() -> o.optString("content").ifBlank { "[无法解密此消息]" }
-            else -> "[无法解密：发送时你尚未上传公钥，或对方发送时你未在线]"
+        } catch (_: Exception) {
+        "[无法解密：payload 解析失败]"
         }
-    }
+        }
 
     // 加载历史消息
     suspend fun loadMessages(): Boolean {
@@ -428,7 +442,7 @@ fun ChatPage() {
         topBar = {
             TopAppBar(
                 title = "life的群组",
-                subtitle = "晚上属于高峰时段，老外全起床了，服务器卡很正常",
+                subtitle = "UID ${myUserId} · 晚上高峰时段服务器卡很正常",
                 navigationIcon = {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -804,7 +818,7 @@ fun InputBottomBar(
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        "当前全员禁言中",
+                        text = "全员禁言中",
                         fontSize = 14.sp,
                         color = Color(0xFFE94634)
                     )
