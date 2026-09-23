@@ -1,12 +1,7 @@
 package cc.lifefuck.minichat
 
-import android.content.Context
-import android.security.keystore.KeyGenParameterSpec
-import android.security.keystore.KeyProperties
 import android.util.Base64
-import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
-import java.security.KeyStore
 import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.spec.GCMParameterSpec
@@ -14,171 +9,77 @@ import javax.crypto.spec.SecretKeySpec
 import org.json.JSONObject
 
 /**
- * 端到端加密管理器。
+ * 群共享 AES-256-GCM 加密管理器。
  *
- * - 每位用户在登录后生成一对 RSA 2048 密钥，私钥保存在 Android Keystore，公钥上传到服务器。
- * - 发送群消息时：随机生成 AES-256-GCM 对称密钥加密消息正文，
- *   再用每个接收者的 RSA 公钥分别加密该对称密钥。
- * - 服务器只存储密文 payload，无法读取内容。
- * - 接收方从 payload 中取出对应自己 userId 的加密对称密钥，
- *   用 Keystore 中的私钥解密，再 AES-GCM 解密正文。
+ * 服务端 settings 表中存有一条群共享密钥，所有 approved 用户登录后拉取。
+ * 发送消息时：随机生成 IV，用该密钥 AES-256-GCM 加密明文得到 payload（iv + cipher）。
+ * 消息接收者用同一个密钥解密，无需 RSA 密钥对，也无需 per-user 密钥封装。
  */
 object CryptoManager {
-    private const val KEY_ALIAS = "mini_chat_rsa_key"
-    private const val ANDROID_KEYSTORE = "AndroidKeyStore"
-
-    // RSA-OAEP SHA-256，可安全加密 256-bit（32 字节）AES 密钥
-    private const val RSA_TRANSFORM = "RSA/ECB/OAEPWithSHA-256AndMGF1Padding"
     private const val AES_TRANSFORM = "AES/GCM/NoPadding"
     private const val AES_KEY_SIZE = 32   // 256 bit
     private const val GCM_IV_SIZE = 12    // 96 bit
     private const val GCM_TAG_SIZE = 128  // bit
 
     /**
-     * 强制重新生成本机 RSA 密钥对，确保私钥和当前上传的公钥严格匹配。
-     *
-     * 同时把生成后的公钥摘要写入日志，便于和服务端比对。
-     *
-     * 同一账号在换设备、重装、清数据或应用被恢复后，Android Keystore 中的旧私钥
-     * 可能与服务端保存的公钥不再对应，导致无法解密。因此每次登录都重建密钥对，
-     * 再把新公钥上传到服务器覆盖旧记录。
-     *
-     * @return 是否成功
-     */
-    fun ensureKeyPair(context: Context): Boolean {
-        return try {
-            val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-            // 先删除已有别名，确保新生成的公私钥配对
-            if (keyStore.containsAlias(KEY_ALIAS)) {
-                keyStore.deleteEntry(KEY_ALIAS)
-            }
-            val generator = java.security.KeyPairGenerator.getInstance("RSA", ANDROID_KEYSTORE)
-            val spec = KeyGenParameterSpec.Builder(
-                KEY_ALIAS,
-                KeyProperties.PURPOSE_DECRYPT or KeyProperties.PURPOSE_ENCRYPT
-            )
-                .setKeySize(2048)
-                .setDigests(KeyProperties.DIGEST_SHA256, KeyProperties.DIGEST_SHA512)
-                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_RSA_OAEP)
-                .build()
-            generator.initialize(spec)
-            val pair = generator.generateKeyPair()
-            val pubBase64 = pair.public?.encoded?.toBase64() ?: ""
-            val pubHash = pubBase64.let { java.security.MessageDigest.getInstance("SHA-256").digest(it.toByteArray()).take(8).joinToString("") { b -> "%02x".format(b) } }
-            android.util.Log.i("CryptoManager", "generateKeyPair done; pub-len=${pubBase64.length} pub-hash=$pubHash")
-            true
-        } catch (e: Exception) {
-            android.util.Log.e("CryptoManager", "generateKeyPair error", e)
-            false
-        }
-    }
-
-    /**
-     * 导出本机公钥的 base64（X.509 SubjectPublicKeyInfo）。
-     */
-    fun getPublicKeyBase64(): String? {
-        return try {
-            val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-            val cert = keyStore.getCertificate(KEY_ALIAS)
-            val pub = cert?.publicKey?.encoded?.toBase64()
-            android.util.Log.i("CryptoManager", "getPublicKey alias-exists=${cert != null} pub-len=${pub?.length}")
-            pub
-        } catch (e: Exception) {
-            android.util.Log.e("CryptoManager", "getPublicKey error", e)
-            null
-        }
-    }
-
-    /**
-     * 加密一条群消息。
+     * 用群共享 AES 密钥加密明文。
      *
      * @param plaintext 明文消息
-     * @param recipientKeys 接收者 userId 到公钥 base64 的映射
-     * @return 加密 payload JSON 字符串；失败返回 null
+     * @param aesKeyBase64 settings 表中的群共享密钥（base64 32 字节）
+     * @return payload JSON 字符串；失败返回 null
      */
-    fun encryptPayload(plaintext: String, recipientKeys: Map<Int, String>): String? {
+    fun encryptPayload(plaintext: String, aesKeyBase64: String): String? {
         return try {
-            // 1. 随机生成 AES 密钥和 IV
-            val aesKey = ByteArray(AES_KEY_SIZE).apply { SecureRandom().nextBytes(this) }
-            val iv = ByteArray(GCM_IV_SIZE).apply { SecureRandom().nextBytes(this) }
-
-            // 2. AES-GCM 加密明文
-            val aesCipher = Cipher.getInstance(AES_TRANSFORM)
-            aesCipher.init(
-                Cipher.ENCRYPT_MODE,
-                SecretKeySpec(aesKey, "AES"),
-                GCMParameterSpec(GCM_TAG_SIZE, iv)
-            )
-            val cipherBytes = aesCipher.doFinal(plaintext.toByteArray(StandardCharsets.UTF_8))
-
-            // 3. 用每个接收者的 RSA 公钥加密 AES 密钥
-            val keysObj = JSONObject()
-            for ((userId, pubKeyBase64) in recipientKeys) {
-                if (pubKeyBase64.isBlank()) continue
-                val pubKeyBytes = pubKeyBase64.fromBase64() ?: continue
-                val keyFactory = java.security.KeyFactory.getInstance("RSA")
-                val pubKey = keyFactory.generatePublic(java.security.spec.X509EncodedKeySpec(pubKeyBytes))
-                val rsaCipher = Cipher.getInstance(RSA_TRANSFORM)
-                rsaCipher.init(Cipher.ENCRYPT_MODE, pubKey)
-                val encryptedAesKey = rsaCipher.doFinal(aesKey)
-                keysObj.put(userId.toString(), encryptedAesKey.toBase64())
-            }
-
-            if (keysObj.length() == 0) {
+            val aesKeyBytes = aesKeyBase64.fromBase64() ?: return null
+            if (aesKeyBytes.size != AES_KEY_SIZE) {
+                android.util.Log.e("CryptoManager", "群共享密钥长度错误：${aesKeyBytes.size}")
                 return null
             }
-
+            val iv = ByteArray(GCM_IV_SIZE).apply { SecureRandom().nextBytes(this) }
+            val cipher = Cipher.getInstance(AES_TRANSFORM)
+            cipher.init(
+                Cipher.ENCRYPT_MODE,
+                SecretKeySpec(aesKeyBytes, "AES"),
+                GCMParameterSpec(GCM_TAG_SIZE, iv)
+            )
+            val cipherBytes = cipher.doFinal(plaintext.toByteArray(StandardCharsets.UTF_8))
             JSONObject().apply {
                 put("iv", iv.toBase64())
                 put("cipher", cipherBytes.toBase64())
-                put("keys", keysObj)
             }.toString()
         } catch (e: Exception) {
-            e.printStackTrace()
+            android.util.Log.e("CryptoManager", "encryptPayload error", e)
             null
         }
     }
 
     /**
-     * 解密一条群消息。
+     * 用群共享 AES 密钥解密 payload。
      *
-     * @param payloadJson 服务器返回的 payload
-     * @param myUserId 当前用户 id
+     * @param payloadJson 服务端 payload（iv + cipher）
+     * @param aesKeyBase64 群共享密钥
      * @return 明文；失败返回 null
      */
-    fun decryptPayload(payloadJson: String, myUserId: Int): String? {
+    fun decryptPayload(payloadJson: String, aesKeyBase64: String): String? {
         return try {
+            val aesKeyBytes = aesKeyBase64.fromBase64() ?: return null
+            if (aesKeyBytes.size != AES_KEY_SIZE) {
+                android.util.Log.e("CryptoManager", "群共享密钥长度错误：${aesKeyBytes.size}")
+                return null
+            }
             val payload = JSONObject(payloadJson)
             val iv = payload.getString("iv").fromBase64() ?: return null
             val cipherBytes = payload.getString("cipher").fromBase64() ?: return null
-            val encryptedAesKeyBase64 = payload.getJSONObject("keys").optString(myUserId.toString())
-            if (encryptedAesKeyBase64.isBlank()) return null
-
-            val encryptedAesKey = encryptedAesKeyBase64.fromBase64() ?: return null
-
-            // 1. RSA 解密 AES 密钥
-            val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-            val privateKey = keyStore.getKey(KEY_ALIAS, null) as? java.security.PrivateKey
-            if (privateKey == null) {
-                android.util.Log.e("CryptoManager", "decryptPayload: privateKey is null")
-                return null
-            }
-            val rsaCipher = Cipher.getInstance(RSA_TRANSFORM)
-            rsaCipher.init(Cipher.DECRYPT_MODE, privateKey)
-            val aesKey = rsaCipher.doFinal(encryptedAesKey)
-            android.util.Log.i("CryptoManager", "decryptPayload RSA ok myUid=$myUserId aesKey-len=${aesKey.size}")
-
-            // 2. AES-GCM 解密正文
-            val aesCipher = Cipher.getInstance(AES_TRANSFORM)
-            aesCipher.init(
+            val cipher = Cipher.getInstance(AES_TRANSFORM)
+            cipher.init(
                 Cipher.DECRYPT_MODE,
-                SecretKeySpec(aesKey, "AES"),
+                SecretKeySpec(aesKeyBytes, "AES"),
                 GCMParameterSpec(GCM_TAG_SIZE, iv)
             )
-            val plain = aesCipher.doFinal(cipherBytes)
+            val plain = cipher.doFinal(cipherBytes)
             String(plain, StandardCharsets.UTF_8)
         } catch (e: Exception) {
-            android.util.Log.e("CryptoManager", "decryptPayload error myUid=$myUserId", e)
+            android.util.Log.e("CryptoManager", "decryptPayload error", e)
             null
         }
     }

@@ -56,20 +56,20 @@ suspend fun Context.setCustomServer(url: String) {
 }
 
 /**
- * 登录/注册成功后强制刷新本机 RSA 公钥到服务器。
+ * 登录/注册成功后拉取群共享 AES 密钥。
  *
- * 同一账号在换设备、重装或清理应用数据后，Android Keystore 会生成新的 RSA 密钥对，
- * 服务端若仍保留旧公钥，发送端会使用旧公钥加密，接收端用新私钥永远解不了密。
- * 因此每次登录成功后都无条件将本机当前公钥覆盖上传到服务器，
- * 让发送者始终使用接收者当前设备的最新公钥加密。
+ * 方案改为方案一（群共享 AES）：管理员为当前 approved 用户设置一条共享 AES 密钥，
+ * 所有消息均用该密钥加密/解密。客户端登录后拉取并缓存在 ApiClient.groupAesKey。
  */
-suspend fun ensurePublicKeyRegistered(context: android.content.Context): String? {
-    if (!CryptoManager.ensureKeyPair(context)) {
-        return "生成加密密钥失败"
+suspend fun fetchGroupKey(): String? {
+    val (ok, json) = ApiClient.fetchGroupKey()
+    val key = json.optString("key", "")
+    return if (ok && key.isNotBlank()) {
+        ApiClient.groupAesKey = key
+        null
+    } else {
+        "拉取群共享密钥失败：${ApiClient.errorText(json)}"
     }
-    val pub = CryptoManager.getPublicKeyBase64() ?: return "读取公钥失败"
-    val (regOk, regJson) = ApiClient.registerPublicKey(pub)
-    return if (regOk) null else "公钥上传失败：${ApiClient.errorText(regJson)}"
 }
 
 /**
@@ -148,8 +148,8 @@ fun MainPage() {
             autoLogging = false
             if (ok) {
                 AuthStore.save(context, saved.account, saved.password, json.optString("role", ""))
-                // 自动登录也要确保 RSA 公钥已上传
-                val keyErr = ensurePublicKeyRegistered(context)
+                // 自动登录也要确保群共享密钥已拉取
+                val keyErr = fetchGroupKey()
                 if (keyErr != null) {
                     showToast(keyErr)
                 }
@@ -285,8 +285,8 @@ fun MainPage() {
                                                 )
                                                 if (ok) {
                                                     AuthStore.save(context, loginAccount, loginPwd, json.optString("role", ""))
-                                                    // 登录成功后确保 RSA 公钥已注册到服务器
-                                                    val keyErr = ensurePublicKeyRegistered(context)
+                                                    // 登录成功后拉取群共享 AES 密钥
+                                                    val keyErr = fetchGroupKey()
                                                     if (keyErr != null) {
                                                         showToast(keyErr)
                                                     }

@@ -70,7 +70,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.Card
@@ -246,11 +245,14 @@ fun ChatPage() {
             val roleServer = user?.optString("role") ?: ""
             if (roleServer.isNotBlank()) myRole = roleServer
             myAvatar = user?.optString("avatar")?.takeIf { it.isNotBlank() }
-            // 任何账号登录后都必须有 RSA 公钥才能收发端到端加密消息（包括管理员）
-            val keyErr = ensurePublicKeyRegistered(context)
-            if (keyErr != null) {
-                keyRegisterError = keyErr
-                Toast.makeText(context, "公钥未上传：$keyErr", Toast.LENGTH_LONG).show()
+            // 管理员不进入群聊，不需要拉取群共享密钥
+            if (myRole != "admin") {
+                // 群共享 AES 方案：登录后拉取服务端AES密钥到内存
+                val keyErr = fetchGroupKey()
+                if (keyErr != null) {
+                    keyRegisterError = keyErr
+                    Toast.makeText(context, "密钥未拉取：$keyErr", Toast.LENGTH_LONG).show()
+                }
             }
         }
     }
@@ -296,8 +298,8 @@ fun ChatPage() {
     /**
      * 解密服务器返回的消息 payload，并读取本地明文缓存兜底。
      *
-     * 对于自己发送的消息，端到端加密 payload 里通常不会包含自己的加密副本，
-     * 因此优先从本地数据库/当前会话缓存读取原文；解密失败时再尝试旧版 content 字段。
+     * 当前方案为群共享 AES-256-GCM：所有 approved 用户使用同一把 AES 密钥，
+     * payload 中不再包含 per-user 的 keys 映射，只有 iv + cipher。
      */
     suspend fun decryptMessage(o: org.json.JSONObject): String {
         val id = o.optInt("id")
@@ -310,29 +312,17 @@ fun ChatPage() {
             return ownPlainText[id] ?: o.optString("content")
         }
         val payload = o.optString("payload").takeIf { it.isNotBlank() }
-        if (payload != null && myUserId != 0) {
-            val decrypted = CryptoManager.decryptPayload(payload, myUserId)
+        val groupKey = ApiClient.groupAesKey
+        if (payload != null && groupKey.isNotBlank()) {
+            val decrypted = CryptoManager.decryptPayload(payload, groupKey)
             if (decrypted != null) return decrypted
         }
-        // 无法解密时给出具体调试信息，方便定位问题
-        return try {
-            val payloadObj = payload?.let { org.json.JSONObject(it) }
-            val keyIds = payloadObj?.optJSONObject("keys")?.keys()?.asSequence()?.toList() ?: emptyList()
-            val serverPub = runBlocking {
-                val (ok, json) = ApiClient.get("/api/me/public-key")
-                if (ok) json.optString("public_key", "").take(12) else "ERR"
-            }
-            val localPub = CryptoManager.getPublicKeyBase64()?.take(12) ?: "NULL"
-            val debug = "myUid=$myUserId keys=[${keyIds.joinToString(",")}] serv=$serverPub local=$localPub"
-            when {
-                myUserId == 0 -> "[UID未加载，请重新登录]"
-                userId == myUserId -> "[自己消息：$debug]"
-                payloadObj == null -> "[payload 为空]"
-                !keyIds.contains(myUserId.toString()) -> "[keys 中缺少当前用户：$debug]"
-                else -> "[RSA/AES 解密失败：$debug]"
-            }
-        } catch (_: Exception) {
-            "[无法解密：payload 解析失败]"
+        // 无法解密时给出简短提示
+        return when {
+            myUserId == 0 -> "[UID未加载，请重新登录]"
+            groupKey.isBlank() -> "[未拉取到群共享密钥，请退出重登]"
+            payload.isNullOrBlank() -> "[payload 为空]"
+            else -> "[AES-GCM 解密失败]"
         }
     }
 
@@ -512,20 +502,6 @@ fun ChatPage() {
                             color = MiuixTheme.colorScheme.primary
                         )
                     }
-                    IconButton(
-                        onClick = {
-                            scope.launch {
-                                val (ok, json) = ApiClient.get("/api/me/public-key")
-                                val serverPub = if (ok) json.optString("public_key", "") else ""
-                                val localPub = CryptoManager.getPublicKeyBase64() ?: ""
-                                val serverHash = serverPub.take(20)
-                                val localHash = localPub.take(20)
-                                Toast.makeText(context, "SERV=${serverHash} LOCAL=${localHash}", Toast.LENGTH_LONG).show()
-                            }
-                        }
-                    ) {
-                        Text("🔑", fontSize = 13.sp)
-                    }
                     // 退出账号
                     IconButton(
                         onClick = {
@@ -580,49 +556,23 @@ fun ChatPage() {
                         messages = messages + tempMsg
                         input = ""
 
-                        // 端到端加密：获取所有接收者公钥后加密，给有公钥的人发，没公钥的人提示收不到
-                        val (payload, missingUsers) = run {
-                            val (keysOk, keysJson) = ApiClient.fetchPublicKeys()
-                            if (!keysOk) {
-                                errorTip = ApiClient.errorText(keysJson)
-                                isSending = false
-                                messages = messages.filter { it.id != tempId }
-                                input = text
-                                return@launch
-                            }
-                            val keysArr = keysJson.optJSONArray("keys") ?: org.json.JSONArray()
-                            val recipients = mutableMapOf<Int, String>()
-                            val missing = mutableListOf<String>()
-                            for (i in 0 until keysArr.length()) {
-                                val item = keysArr.getJSONObject(i)
-                                val uid = item.optInt("id")
-                                val name = item.optString("username").takeIf { it.isNotBlank() } ?: "用户$uid"
-                                val pub = item.optString("public_key").takeIf { it.isNotBlank() }
-                                if (uid != 0 && pub != null) {
-                                    recipients[uid] = pub
-                                } else if (uid != 0) {
-                                    missing.add(name)
-                                }
-                            }
-                            // 发送者自己不需要被服务端加密副本，靠本地明文缓存显示
-                            val missingWithoutSelf = missing.filter { it != myUsername }
-                            if (recipients.isEmpty()) {
-                                errorTip = if (missingWithoutSelf.isEmpty()) "群成员公钥为空" else "所有成员均未上传公钥"
-                                isSending = false
-                                messages = messages.filter { it.id != tempId }
-                                input = text
-                                return@launch
-                            }
-                            val encrypted = CryptoManager.encryptPayload(text, recipients)
-                                ?: run {
-                                    errorTip = "消息加密失败"
-                                    isSending = false
-                                    messages = messages.filter { it.id != tempId }
-                                    input = text
-                                    return@launch
-                                }
-                            encrypted to missingWithoutSelf
+                        // 群共享 AES 加密：所有 approved 用户共用同一把 AES 密钥
+                        val groupKey = ApiClient.groupAesKey
+                        if (groupKey.isBlank()) {
+                            errorTip = "未拉取到群共享密钥，请退出重登"
+                            isSending = false
+                            messages = messages.filter { it.id != tempId }
+                            input = text
+                            return@launch
                         }
+                        val payload = CryptoManager.encryptPayload(text, groupKey)
+                            ?: run {
+                                errorTip = "消息加密失败"
+                                isSending = false
+                                messages = messages.filter { it.id != tempId }
+                                input = text
+                                return@launch
+                            }
 
                         val (ok, json) = ApiClient.post(
                             "/api/send",
@@ -630,9 +580,6 @@ fun ChatPage() {
                         )
                         messages = messages.filter { it.id != tempId }
                         if (ok) {
-                            if (missingUsers.isNotEmpty()) {
-                                Toast.makeText(context, "以下用户未上传公钥，无法解密此消息：${missingUsers.joinToString(",")}", Toast.LENGTH_LONG).show()
-                            }
                             val obj = json.optJSONObject("message")
                             if (obj != null) {
                                 val msgId = obj.optInt("id")

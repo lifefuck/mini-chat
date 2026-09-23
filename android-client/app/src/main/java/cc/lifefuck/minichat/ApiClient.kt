@@ -51,6 +51,8 @@ object ApiClient {
     var currentUsername: String = ""
     @Volatile
     var currentUserId: Int = 0
+    @Volatile
+    var groupAesKey: String = ""
 
     /**
      * 发送 POST 表单请求，返回解析后的 JSON。
@@ -148,17 +150,10 @@ object ApiClient {
     }
 
     /**
-     * 上传本机 RSA 公钥到服务器，用于端到端加密。
+     * 拉取群共享 AES 密钥。
      */
-    suspend fun registerPublicKey(publicKey: String): Pair<Boolean, JSONObject> {
-        return post("/api/register-public-key", mapOf("public_key" to publicKey))
-    }
-
-    /**
-     * 获取所有已审核用户的公钥列表，用于发送加密群消息。
-     */
-    suspend fun fetchPublicKeys(): Pair<Boolean, JSONObject> {
-        return get("/api/public-keys")
+    suspend fun fetchGroupKey(): Pair<Boolean, JSONObject> {
+        return get("/api/group-key")
     }
 
     /**
@@ -211,5 +206,6 @@ object ApiClient {
         cookieManager.cookieStore.removeAll()
         currentUsername = ""
         currentUserId = 0
+        groupAesKey = ""
     }
 }

@@ -7,6 +7,7 @@ import json
 import sqlite3
 import threading
 import secrets
+import base64
 from datetime import timedelta
 from functools import wraps
 
@@ -100,7 +101,14 @@ def init_db():
     # 默认不开启全员禁言
     db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('mute_all', '0')")
 
-    # 创建内置管理员账号，仅当不存在时插入（默认没有公钥，加密版本后续登录时上传）
+    # 初始化群共享 AES-256 密钥（32 字节随机，base64）。所有 approved 用户共用此密钥加密消息。
+    db.execute(
+        "INSERT OR IGNORE INTO settings (key, value) "
+        "SELECT 'group_aes_key', ? WHERE (SELECT COUNT(*) FROM settings WHERE key='group_aes_key') = 0",
+        (base64.b64encode(secrets.token_bytes(32)).decode(),)
+    )
+
+    # 创建内置管理员账号，仅当不存在时插入（管理员不进群聊，无需加密密钥）
     admin_hash = generate_password_hash(ADMIN_PASSWORD)
     db.execute("""
         INSERT OR IGNORE INTO users (qq, username, password_hash, role, status)
@@ -612,45 +620,64 @@ def api_messages():
     return jsonify({"messages": [dict(r) for r in rows], "muted": is_muted()})
 
 
+def get_group_aes_key():
+    """从 settings 表读取群共享 AES 密钥；不存在则自动生成并写入数据库。"""
+    db = get_db()
+    row = db.execute(
+        "SELECT value FROM settings WHERE key='group_aes_key'"
+    ).fetchone()
+    if row and row["value"]:
+        return row["value"]
+    key = base64.b64encode(secrets.token_bytes(32)).decode()
+    db.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('group_aes_key', ?)",
+        (key,)
+    )
+    db.commit()
+    return key
+
+
+@app.route("/api/group-key", methods=["GET"])
+@approved_required
+def api_group_key():
+    """已审核用户拉取群共享 AES 加密密钥。"""
+    return jsonify({"ok": True, "key": get_group_aes_key()})
+
+
 @app.route("/api/send", methods=["POST"])
 @approved_required
 def api_send():
-    """普通已审核用户发送文字消息或端到端加密消息。"""
+    """普通已审核用户发送 AES-256-GCM 加密消息正文。
+
+    客户端用群共享密钥加密明文生成 payload（iv + cipher），
+    服务端只存储密文，无法读取内容。
+    """
     if is_muted():
         return jsonify({"ok": False, "error": "当前群聊已开启全员禁言"})
     user = current_user()
     # 兼容客户端用表单或 JSON 发送
     if request.is_json:
         data = request.get_json(silent=True) or {}
-        content = data.get("content", "").strip()
         payload_raw = data.get("payload", "")
     else:
-        content = request.form.get("content", "").strip()
         payload_raw = request.form.get("payload", "")
 
-    if not content and not payload_raw:
+    if not payload_raw:
         return jsonify({"ok": False, "error": "消息内容不能为空"})
 
-    payload = None
-    if payload_raw:
-        try:
-            payload_obj = json.loads(payload_raw)
-            payload = json.dumps(payload_obj)
-        except Exception as e:
-            return jsonify({"ok": False, "error": f"消息加密格式错误: {e}"})
+    try:
+        payload_obj = json.loads(payload_raw)
+        payload = json.dumps(payload_obj)
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"消息加密格式错误: {e}"})
 
-    if content and len(content) > 500:
-        return jsonify({"ok": False, "error": "消息长度不能超过 500 字符"})
-
-    if content:
-        # 简单转义，防止 XSS
-        content = content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
+    # 服务端侧对明文做 XSS 转义已无意义，因为 content 字段不再存放明文。
+    # 解密后的明文渲染仍由客户端负责。
     db = get_db()
     cursor = db.cursor()
     cursor.execute(
         "INSERT INTO messages (user_id, username, content, payload) VALUES (?, ?, ?, ?)",
-        (user["id"], user["username"], content or "", payload),
+        (user["id"], user["username"], "", payload),
     )
     msg_id = cursor.lastrowid
     row = db.execute(
@@ -772,60 +799,11 @@ def api_health():
     return jsonify({"ok": True})
 
 
-@app.route("/api/public-key/<int:user_id>", methods=["GET"])
-@login_required
-def api_public_key(user_id):
-    """获取指定用户的 RSA 公钥，用于端到端加密。"""
-    db = get_db()
-    row = db.execute(
-        "SELECT public_key FROM users WHERE id = ?", (user_id,)
-    ).fetchone()
-    if not row or not row["public_key"]:
-        return jsonify({"ok": False, "error": "用户公钥不存在"})
-    return jsonify({"ok": True, "public_key": row["public_key"]})
-
-
-@app.route("/api/me/public-key", methods=["GET"])
-@login_required
-def api_me_public_key():
-    """获取当前登录用户的 RSA 公钥，用于判断是否需要重新上传/补传。"""
-    db = get_db()
-    row = db.execute(
-        "SELECT public_key FROM users WHERE id = ?", (session["user_id"],)
-    ).fetchone()
-    return jsonify({
-        "ok": True,
-        "public_key": row["public_key"] if row else ""
-    })
-
-
-@app.route("/api/public-keys", methods=["GET"])
-@login_required
-def api_public_keys():
-    """获取所有已审核/内置用户的公钥列表（包含管理员，因为管理员也要参与群聊）。"""
-    db = get_db()
-    rows = db.execute(
-        """SELECT id, username, public_key FROM users
-           WHERE status = 'approved'
-             AND public_key IS NOT NULL AND public_key != ''"""
-    ).fetchall()
-    return jsonify({
-        "ok": True,
-        "keys": [{"id": r["id"], "username": r["username"], "public_key": r["public_key"]} for r in rows]
-    })
-
-
-@app.route("/api/register-public-key", methods=["POST"])
-@login_required
-def api_register_public_key():
-    """当前登录用户上传 RSA 公钥。"""
-    public_key = (request.form.get("public_key") or "").strip()
-    if not public_key:
-        return jsonify({"ok": False, "error": "公钥不能为空"})
-    db = get_db()
-    db.execute("UPDATE users SET public_key = ? WHERE id = ?", (public_key, session["user_id"]))
-    db.commit()
-    return jsonify({"ok": True})
+@app.route("/api/group-key", methods=["GET"])
+@approved_required
+def api_group_key():
+    """已审核用户拉取群共享 AES 加密密钥。"""
+    return jsonify({"ok": True, "key": get_group_aes_key()})
 
 
 # 启动入口 ================================================
