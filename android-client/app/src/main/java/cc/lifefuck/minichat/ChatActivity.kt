@@ -289,7 +289,7 @@ fun ChatPage() {
      * 对于自己发送的消息，端到端加密 payload 里通常不会包含自己的加密副本，
      * 因此优先从本地数据库/当前会话缓存读取原文；解密失败时再尝试旧版 content 字段。
      */
-    fun decryptMessage(o: org.json.JSONObject): String {
+    suspend fun decryptMessage(o: org.json.JSONObject): String {
         val id = o.optInt("id")
         val userId = o.optInt("user_id")
         // 本地数据库优先命中：退出重进后也能直接显示明文
@@ -328,14 +328,16 @@ fun ChatPage() {
         messages = allMessages
         lastId = allMessages.maxOfOrNull { it.id } ?: 0
         // 把服务端能解密出来的消息持久化到本地
-        localDb.saveAll(loaded)
+        if (loaded.isNotEmpty()) {
+            localDb.saveAll(loaded)
+        }
         muted = json.optBoolean("muted", false)
         return true
     }
 
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    // 前台时每秒检测服务器状态；切后台自动暂停
+    // 轻量心跳：每 10 秒独立探测一次服务器，作为断网状态的兜底更新
     LaunchedEffect(Unit) {
         lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
             while (true) {
@@ -349,42 +351,49 @@ fun ChatPage() {
                         lastToastTime = now
                     }
                 }
-                delay(1000)
+                delay(10000)
             }
         }
     }
 
-    // 前台时轮询新消息；切后台自动暂停，回到前台再恢复
+    // 消息轮询：切后台暂停，回前台恢复。响应结果本身也作为在线/离线判据
     LaunchedEffect(Unit) {
         lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
             loadMessages()
             while (true) {
                 delay(1500)
-                val (_, json) = ApiClient.get("/api/messages?last_id=$lastId")
-                val arr = json.optJSONArray("messages") ?: continue
-                val new = (0 until arr.length()).map { i ->
-                    val o = arr.getJSONObject(i)
-                    Msg(
-                        id = o.optInt("id"),
-                        username = o.optString("username"),
-                        content = decryptMessage(o),
-                        time = formatTime(o.optString("created_at", "")),
-                        avatar = o.optString("avatar").takeIf { it.isNotBlank() }
-                    )
+                try {
+                    val (_, json) = ApiClient.get("/api/messages?last_id=$lastId")
+                    isOnline = true
+                    connectionError = ""
+                    val arr = json.optJSONArray("messages") ?: continue
+                    val new = (0 until arr.length()).map { i ->
+                        val o = arr.getJSONObject(i)
+                        Msg(
+                            id = o.optInt("id"),
+                            username = o.optString("username"),
+                            content = decryptMessage(o),
+                            time = formatTime(o.optString("created_at", "")),
+                            avatar = o.optString("avatar").takeIf { it.isNotBlank() }
+                        )
+                    }
+                    if (new.isNotEmpty()) {
+                        // 合并新消息时按 id 去重，保留本地已有的明文缓存版本
+                        val existing = messages.associateBy { it.id }
+                        val merged = new.map { existing[it.id] ?: it }
+                        val result = (messages + merged.filter { it.id !in existing.keys })
+                            .sortedBy { it.id }
+                            .distinctBy { it.id }
+                        messages = result
+                        lastId = result.maxOfOrNull { it.id } ?: lastId
+                        // 把新消息明文写进本地数据库，退出重进后可恢复
+                        scope.launch { localDb.saveAll(new) }
+                    }
+                    muted = json.optBoolean("muted", false)
+                } catch (_: Exception) {
+                    // 轮询失败本身代表离线，由心跳协程负责更新 UI 提示
+                    isOnline = false
                 }
-                if (new.isNotEmpty()) {
-                    // 合并新消息时按 id 去重，保留本地已有的明文缓存版本
-                    val existing = messages.associateBy { it.id }
-                    val merged = new.map { existing[it.id] ?: it }
-                    val result = (messages + merged.filter { it.id !in existing.keys })
-                        .sortedBy { it.id }
-                        .distinctBy { it.id }
-                    messages = result
-                    lastId = result.maxOfOrNull { it.id } ?: lastId
-                    // 把新消息明文写进本地数据库，退出重进后可恢复
-                    localDb.saveAll(new)
-                }
-                muted = json.optBoolean("muted", false)
             }
         }
     }
@@ -444,6 +453,21 @@ fun ChatPage() {
                     }
                 },
                 actions = {
+                    // 广告：灰色链接按钮，点击用外部浏览器打开
+                    IconButton(
+                        onClick = {
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://xingran666.xyz"))
+                            context.startActivity(intent)
+                        },
+                        modifier = Modifier.widthIn(min = 48.dp)
+                    ) {
+                        Text(
+                            text = "广告",
+                            fontSize = 13.sp,
+                            maxLines = 1,
+                            color = Color(0xFF9E9E9E)
+                        )
+                    }
                     // 后台入口：在普通用户聊天页内登录管理员子账号，成功后进入管理后台。
                     // 管理员账号本身不进入聊天页，因此这里始终按子账号模式处理。
                     IconButton(
@@ -561,13 +585,15 @@ fun ChatPage() {
                                 // 保存自己发送的明文到本地数据库，退出重进后仍可恢复
                                 if (msgId > 0) {
                                     ownPlainText[msgId] = sentContent
-                                    localDb.insertOrReplace(
-                                        msgId,
-                                        obj.optString("username"),
-                                        sentContent,
-                                        formatTime(obj.optString("created_at", "")),
-                                        obj.optString("avatar").takeIf { it.isNotBlank() }
-                                    )
+                                    scope.launch {
+                                        localDb.insertOrReplace(
+                                            msgId,
+                                            obj.optString("username"),
+                                            sentContent,
+                                            formatTime(obj.optString("created_at", "")),
+                                            obj.optString("avatar").takeIf { it.isNotBlank() }
+                                        )
+                                    }
                                 }
                                 val newMsg = Msg(
                                     id = msgId,

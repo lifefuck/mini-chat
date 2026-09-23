@@ -372,8 +372,8 @@ def admin_page():
     ).fetchall()
     messages = db.execute(
         """
-        SELECT m.id, m.username, m.content,
-               strftime('%Y-%m-%d %H:%M:%S', m.created_at) AS created_at
+        SELECT m.id, m.user_id, m.username, m.content,
+               strftime('%Y-%m-%d %H:%M:%S', m.created_at, 'localtime') AS created_at
         FROM messages m ORDER BY m.created_at DESC LIMIT 200
         """
     ).fetchall()
@@ -599,7 +599,7 @@ def api_messages():
     rows = db.execute(
         """
         SELECT m.id, m.user_id, m.username, m.content, m.payload,
-               strftime('%Y-%m-%d %H:%M:%S', m.created_at) AS created_at,
+               strftime('%Y-%m-%d %H:%M:%S', m.created_at, 'localtime') AS created_at,
                u.avatar
         FROM messages m
         LEFT JOIN users u ON u.id = m.user_id
@@ -655,7 +655,7 @@ def api_send():
     row = db.execute(
         """
         SELECT m.id, m.user_id, m.username, m.content, m.payload,
-               strftime('%Y-%m-%d %H:%M:%S', m.created_at) AS created_at,
+               strftime('%Y-%m-%d %H:%M:%S', m.created_at, 'localtime') AS created_at,
                u.avatar
         FROM messages m
         LEFT JOIN users u ON u.id = m.user_id
